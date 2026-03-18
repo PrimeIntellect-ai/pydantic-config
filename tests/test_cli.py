@@ -753,6 +753,92 @@ def test_dict_any_in_discriminated_union(tmp_toml_file):
     assert config.mode.kwargs == {"alpha": 0.5}
 
 
+# Tests: list fields via JSON CLI args
+
+
+def test_list_field_via_json_cli():
+    """--env-ratios '[0.7, 0.3]' should parse JSON and set the list field."""
+
+    class Config(BaseConfig):
+        env_ratios: list[float] = []
+        name: str = "test"
+
+    config = cli(Config, args=["--env-ratios", "[0.7, 0.3]", "--name", "hello"])
+    assert config.env_ratios == [0.7, 0.3]
+    assert config.name == "hello"
+
+
+def test_list_field_via_json_cli_nested():
+    """JSON list args should work for nested config fields."""
+
+    class BufferConfig(BaseConfig):
+        env_ratios: list[float] | None = None
+        seed: int | None = None
+
+    class Config(BaseConfig):
+        buffer: BufferConfig = BufferConfig()
+
+    config = cli(Config, args=["--buffer.env-ratios", "[0.7, 0.2, 0.1]"])
+    assert config.buffer.env_ratios == [0.7, 0.2, 0.1]
+
+
+def test_list_field_via_json_cli_optional():
+    """JSON list args should work for Optional[list[...]] fields."""
+
+    class Config(BaseConfig):
+        tags: list[str] | None = None
+        name: str = "test"
+
+    config = cli(Config, args=["--tags", '["alpha", "beta"]', "--name", "hello"])
+    assert config.tags == ["alpha", "beta"]
+
+
+def test_list_field_via_json_cli_integers():
+    """JSON list args should work for list[int] fields."""
+
+    class Config(BaseConfig):
+        gpu_ids: list[int] = []
+
+    config = cli(Config, args=["--gpu-ids", "[0, 1, 2, 3]"])
+    assert config.gpu_ids == [0, 1, 2, 3]
+
+
+def test_list_field_space_separated_still_works():
+    """Space-separated list args (tyro native) should still work when not JSON."""
+
+    class Config(BaseConfig):
+        env_ratios: list[float] = []
+
+    config = cli(Config, args=["--env-ratios", "0.7", "0.3"])
+    assert config.env_ratios == [0.7, 0.3]
+
+
+def test_list_field_via_json_cli_with_toml(tmp_toml_file):
+    """JSON list CLI args should override TOML list values."""
+
+    class BufferConfig(BaseConfig):
+        env_ratios: list[float] | None = None
+
+    class Config(BaseConfig):
+        buffer: BufferConfig = BufferConfig()
+        name: str = "test"
+
+    write_file(tmp_toml_file, 'name = "from-toml"\n\n[buffer]\nenv_ratios = [0.5, 0.5]')
+    config = cli(Config, args=["@", tmp_toml_file, "--buffer.env-ratios", "[0.7, 0.3]"])
+    assert config.buffer.env_ratios == [0.7, 0.3]
+    assert config.name == "from-toml"
+
+
+def test_list_field_via_toml_no_cli():
+    """list fields from TOML (no CLI override) should work as before."""
+
+    class Config(BaseConfig):
+        ratios: list[float] = []
+
+    config = cli(Config, args=[])
+    assert config.ratios == []
+
+
 # Tests: dict[str, Any] fields via JSON CLI args
 
 

@@ -430,15 +430,29 @@ def _find_optional_model_paths(cls: type, prefix: str = "") -> set[str]:
     return paths
 
 
-def _is_dict_field(annotation: type) -> bool:
-    """Check if annotation is a dict type (bare ``dict`` or ``dict[str, Any]``)."""
+_JSON_VALUE_TYPES = (dict, list)
+
+
+def _is_json_value_field(annotation: type) -> bool:
+    """Check if annotation is a type that should accept JSON-encoded CLI values.
+
+    Covers ``dict``, ``list``, and their ``Optional`` / ``Annotated`` wrappers.
+    """
     if hasattr(annotation, "__metadata__"):
         annotation = get_args(annotation)[0]
-    return annotation is dict or get_origin(annotation) is dict
+    origin = get_origin(annotation)
+    if annotation in _JSON_VALUE_TYPES or origin in _JSON_VALUE_TYPES:
+        return True
+    if origin is Union or origin is getattr(types, "UnionType", None):
+        non_none = [a for a in get_args(annotation) if a is not type(None)]
+        if len(non_none) == 1:
+            inner = non_none[0]
+            return inner in _JSON_VALUE_TYPES or get_origin(inner) in _JSON_VALUE_TYPES
+    return False
 
 
-def _find_dict_field_paths(cls: type, prefix: str = "") -> set[str]:
-    """Recursively find all CLI arg paths (kebab-case) that map to dict fields."""
+def _find_json_value_field_paths(cls: type, prefix: str = "") -> set[str]:
+    """Recursively find all CLI arg paths (kebab-case) that map to JSON-value fields."""
     paths: set[str] = set()
     if not hasattr(cls, "model_fields"):
         return paths
@@ -446,21 +460,24 @@ def _find_dict_field_paths(cls: type, prefix: str = "") -> set[str]:
         field_kebab = field_name.replace("_", "-")
         full_path = f"{prefix}.{field_kebab}" if prefix else field_kebab
         annotation = field_info.annotation
-        if _is_dict_field(annotation):
+        if _is_json_value_field(annotation):
             paths.add(full_path)
         inner = annotation
         if hasattr(inner, "__metadata__"):
             inner = get_args(inner)[0]
         if isinstance(inner, type) and issubclass(inner, BaseModel):
-            paths.update(_find_dict_field_paths(inner, prefix=full_path))
+            paths.update(_find_json_value_field_paths(inner, prefix=full_path))
     return paths
 
 
-def _extract_json_dict_args(args: list[str], dict_paths: set[str]) -> tuple[list[str], dict]:
-    """Intercept CLI args for dict fields and parse their JSON values.
+def _extract_json_value_args(args: list[str], json_paths: set[str]) -> tuple[list[str], dict]:
+    """Intercept CLI args for dict/list fields and parse their JSON values.
 
-    When a CLI arg like ``--extra-kwargs '{"key": 123}'`` matches a known
-    dict field path, parse the JSON and inject it into the config dict.
+    Handles any CLI arg whose path maps to a dict or list field and whose
+    value looks like JSON (starts with ``{`` or ``[``).  For example::
+
+        --extra-kwargs '{"key": 123}'     → dict field
+        --buffer.env-ratios '[0.7, 0.3]'  → list field
 
     Returns (remaining_args, config_overrides_as_nested_dict).
     """
@@ -472,9 +489,8 @@ def _extract_json_dict_args(args: list[str], dict_paths: set[str]) -> tuple[list
         arg = args[i]
         if arg.startswith("--"):
             path = arg[2:]
-            if path in dict_paths and i + 1 < len(args):
-                value_str = args[i + 1]
-                parsed = json.loads(value_str)
+            if path in json_paths and i + 1 < len(args) and args[i + 1][:1] in ("{", "["):
+                parsed = json.loads(args[i + 1])
                 snake_path = path.replace("-", "_")
                 nested = _nest_config(snake_path, parsed)
                 overrides = _deep_merge(overrides, nested)
@@ -645,12 +661,13 @@ def cli(
             if bare_overrides:
                 merged_config = _deep_merge(merged_config, bare_overrides)
 
-        # Extract JSON dict args (e.g. --extra-kwargs '{"key": 123}')
-        dict_paths = _find_dict_field_paths(cls)
-        if dict_paths:
-            remaining_args, dict_overrides = _extract_json_dict_args(remaining_args, dict_paths)
-            if dict_overrides:
-                merged_config = _deep_merge(merged_config, dict_overrides)
+        # Extract JSON-encoded values for dict/list fields
+        # (e.g. --extra-kwargs '{"key": 123}', --env-ratios '[0.7, 0.3]')
+        json_paths = _find_json_value_field_paths(cls)
+        if json_paths:
+            remaining_args, json_overrides = _extract_json_value_args(remaining_args, json_paths)
+            if json_overrides:
+                merged_config = _deep_merge(merged_config, json_overrides)
 
         # Build default from merged config
         config_default = None
