@@ -430,6 +430,66 @@ def _find_optional_model_paths(cls: type, prefix: str = "") -> set[str]:
     return paths
 
 
+def _find_optional_model_inner_classes(cls: type, prefix: str = "") -> dict[str, type]:
+    """Map each Optional[BaseModel] CLI path (kebab-case) to its inner BaseModel class.
+
+    Used to fabricate a default instance so tyro renders sub-fields in ``--help``
+    for fields that would otherwise default to None.
+    """
+    result: dict[str, type] = {}
+    if not hasattr(cls, "model_fields"):
+        return result
+    for field_name, field_info in cls.model_fields.items():
+        field_kebab = field_name.replace("_", "-")
+        full_path = f"{prefix}.{field_kebab}" if prefix else field_kebab
+        annotation = field_info.annotation
+        if _is_optional_model(annotation):
+            inner = annotation
+            if hasattr(inner, "__metadata__"):
+                inner = get_args(inner)[0]
+            non_none = [a for a in get_args(inner) if a is not type(None)]
+            result[full_path] = non_none[0]
+        inner = annotation
+        if hasattr(inner, "__metadata__"):
+            inner = get_args(inner)[0]
+        if isinstance(inner, type) and issubclass(inner, BaseModel):
+            result.update(_find_optional_model_inner_classes(inner, prefix=full_path))
+    return result
+
+
+def _path_is_set_in_config(config: dict, path: str) -> bool:
+    """Check whether a dotted kebab-case path resolves to a value in the merged config dict."""
+    parts = [p.replace("-", "_") for p in path.split(".")]
+    cur = config
+    for part in parts:
+        if not isinstance(cur, dict) or part not in cur:
+            return False
+        cur = cur[part]
+    return cur is not None
+
+
+def _path_value_on_model(obj, path: str):
+    """Walk a dotted kebab-case path on a Pydantic model, returning the value or None if missing."""
+    parts = [p.replace("-", "_") for p in path.split(".")]
+    cur = obj
+    for part in parts:
+        if cur is None or not isinstance(cur, BaseModel):
+            return None
+        cur = getattr(cur, part, None)
+    return cur
+
+
+def _set_path_to_none(obj: BaseModel, path: str) -> None:
+    """Set the field at a dotted kebab-case path to None on a Pydantic model."""
+    parts = [p.replace("-", "_") for p in path.split(".")]
+    target = obj
+    for part in parts[:-1]:
+        target = getattr(target, part, None)
+        if target is None:
+            return
+    setattr(target, parts[-1], None)
+
+
 _JSON_VALUE_TYPES = (dict, list)
 
 
@@ -679,18 +739,49 @@ def cli(
         if config_default is not None:
             final_default = config_default
 
+        # Inject placeholder instances for Optional[BaseModel] fields that are
+        # still None so tyro renders their sub-fields in --help. The placeholders
+        # are reset to None on the result for any path the user didn't activate.
+        inactive_optional_paths: list[str] = []
+        optional_inner_classes = _find_optional_model_inner_classes(cls)
+        if optional_inner_classes:
+            placeholder_config: dict = {}
+            for path, inner_cls in optional_inner_classes.items():
+                if _path_is_set_in_config(merged_config, path):
+                    continue
+                if default is not None and _path_value_on_model(default, path) is not None:
+                    continue
+                snake_path = path.replace("-", "_")
+                placeholder = inner_cls().model_dump()
+                placeholder_config = _deep_merge(placeholder_config, _nest_config(snake_path, placeholder))
+                inactive_optional_paths.append(path)
+            if placeholder_config:
+                placeholder_default = _build_default_from_config(
+                    cls,
+                    _deep_merge(merged_config, placeholder_config),
+                    config_path="merged config",
+                )
+                if placeholder_default is not None:
+                    final_default = placeholder_default
+
         # Call tyro with processed args.
         # AvoidSubcommands prevents tyro from creating subcommands for union
         # types (e.g. discriminated unions, Optional[BaseModel]). This avoids
         # tyro errors on dict[str, Any] fields in non-default union variants
         # and keeps CLI usage simple — variant selection belongs in config files.
-        return tyro.cli(
+        result = tyro.cli(
             tyro.conf.AvoidSubcommands[cls],
             args=remaining_args,
             default=final_default,
             prog=prog,
             description=description,
         )
+
+        # Reset placeholder Optional[BaseModel] fields back to None on the result.
+        for path in inactive_optional_paths:
+            _set_path_to_none(result, path)
+
+        return result
     except ConfigFileError as e:
         # Only print formatted error when running from CLI (sys.argv)
         # When args are explicitly passed, re-raise for programmatic handling
