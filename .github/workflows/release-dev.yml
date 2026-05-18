@@ -1,0 +1,40 @@
+name: Dev release to PyPI
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-dev
+  cancel-in-progress: false
+
+jobs:
+  release-dev:
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Set dev version
+        run: |
+          base=$(uv run --with tomli python -c "import tomli; print(tomli.load(open('pyproject.toml','rb'))['project']['version'])")
+          n=$(git rev-list --count HEAD)
+          dev_version="${base}.dev${n}"
+          echo "Publishing $dev_version"
+          sed -i -E "0,/^version = \"[^\"]+\"/s//version = \"${dev_version}\"/" pyproject.toml
+
+      - name: Build
+        run: uv build
+
+      - name: Publish to PyPI
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: uv publish
