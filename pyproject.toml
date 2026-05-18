@@ -1,5 +1,5 @@
 [project]
-name = "pydantic_config"
+name = "prime-pydantic-config"
 version = "0.3.0"
 description = "tyro-based CLI with TOML/YAML config file support for ML"
 authors = [
@@ -12,10 +12,17 @@ dependencies = [
 readme = "README.md"
 requires-python = ">= 3.10"
 
+[project.urls]
+Homepage = "https://github.com/PrimeIntellect-ai/pydantic-config"
+Repository = "https://github.com/PrimeIntellect-ai/pydantic-config"
+Issues = "https://github.com/PrimeIntellect-ai/pydantic-config/issues"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pydantic_config"]
 
 
 [project.optional-dependencies]
