@@ -138,11 +138,11 @@ if __name__ == "__main__":
         "assets/union_switch.svg",
     )
 
-    # 10. Disable optional
+    # 10. Disable optional (file enables, CLI disables)
     to_svg(
         session(
-            "uv run python examples/train.py --run-name r1 --wandb --no-wandb",
-            TRAIN + ["--run-name", "r1", "--wandb", "--no-wandb"],
+            "uv run python examples/train.py --run-name r1 --wandb @ examples/wandb.toml --no-wandb",
+            TRAIN + ["--run-name", "r1", "--wandb", "@", "examples/wandb.toml", "--no-wandb"],
         ),
         "Disable optional sub-config",
         "assets/disable_optional.svg",

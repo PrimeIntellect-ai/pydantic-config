@@ -169,8 +169,8 @@ turned off again with `--no-<name>` or by passing the literal `None`.
 In TOML, write `wandb = "None"` (the string `"None"` is coerced to null).
 
 ```bash
-uv run python examples/train.py --run-name r1 --wandb --no-wandb                       # enable then disable
-uv run python examples/train.py --run-name r1 --wandb None                             # explicit None
+uv run python examples/train.py --run-name r1 --wandb @ examples/wandb.toml --no-wandb  # file enables, CLI disables
+uv run python examples/train.py --run-name r1 --wandb None                              # explicit None
 ```
 
 <p align="center">
