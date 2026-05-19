@@ -32,7 +32,7 @@ import os
 import shutil
 import sys
 import types
-from typing import Literal, TypeVar, Union, get_args, get_origin, overload
+from typing import Any, Literal, TypeVar, Union, get_args, get_origin, overload
 
 import tyro
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -573,31 +573,45 @@ def _format_type_for_help(annotation) -> str:
     return getattr(annotation, "__name__", str(annotation)).upper()
 
 
-def _render_variant_panel(path: str, variant_cls: type, term_width: int) -> list[str]:
-    """Render a tyro-style help panel listing a union variant's fields."""
-    rows: list[tuple[str, str]] = []
-    for fname, finfo in variant_cls.model_fields.items():
-        type_str = _format_type_for_help(finfo.annotation)
-        flag = f"--{path}.{fname.replace('_', '-')}"
-        if type_str:
-            flag = f"{flag} {type_str}"
-        default = finfo.default
-        if isinstance(default, BaseModel):
-            note = ""
-        elif default is None:
-            note = "(default: None)"
-        elif repr(default) == "PydanticUndefined":
-            note = ""
-        else:
-            note = f"(default: {default})"
-        rows.append((flag, note))
+def _format_default_for_help(default: Any) -> str:
+    """Render a field default as the trailing ``(default: X)`` annotation for help.
 
+    Rules in order:
+      - ``BaseModel`` instance → no annotation (its fields appear in a sub-panel)
+      - ``None``                → ``(default: None)``
+      - ``PydanticUndefined``   → no annotation (required field)
+      - callable (``default_factory``) → call it and recurse so e.g. ``list``
+        renders as ``(default: [])`` rather than ``<function list>``
+      - everything else → ``(default: {value})``
+    """
+    if isinstance(default, BaseModel):
+        return ""
+    if default is None:
+        return "(default: None)"
+    if repr(default) == "PydanticUndefined":
+        return ""
+    if callable(default):
+        try:
+            return _format_default_for_help(default())
+        except Exception:
+            return ""
+    return f"(default: {default})"
+
+
+def _render_panel(title: str, rows: list[tuple[str, str]], term_width: int) -> list[str]:
+    """Render a box-drawn help panel.
+
+    ``rows`` is a list of ``(flag_with_metavar, default_annotation)`` pairs.
+    Empty ``rows`` returns an empty list (caller should suppress the panel).
+
+    The box auto-sizes to the wider of (longest row, title) but never exceeds
+    ``term_width``. Long lines are truncated with an ellipsis.
+    """
     if not rows:
         return []
 
     flag_w = max(len(f) for f, _ in rows)
     body_lines = [f"{f:<{flag_w}}  {n}".rstrip() for f, n in rows]
-    title = f"{path} variant: {variant_cls.__name__}"
     inner = max(max(len(line) for line in body_lines), len(title) + 2)
     box_total = min(max(inner + 4, len(title) + 6), max(40, term_width))
     inner = box_total - 4
@@ -609,6 +623,18 @@ def _render_variant_panel(path: str, variant_cls: type, term_width: int) -> list
         lines.append(f"│ {truncated:<{inner}} │")
     lines.append(f"╰{'─' * (box_total - 2)}╯")
     return lines
+
+
+def _render_variant_panel(path: str, variant_cls: type, term_width: int) -> list[str]:
+    """Render a help panel listing a union variant's fields."""
+    rows: list[tuple[str, str]] = []
+    for fname, finfo in variant_cls.model_fields.items():
+        type_str = _format_type_for_help(finfo.annotation)
+        flag = f"--{path}.{fname.replace('_', '-')}"
+        if type_str:
+            flag = f"{flag} {type_str}"
+        rows.append((flag, _format_default_for_help(finfo.default)))
+    return _render_panel(f"{path} variant: {variant_cls.__name__}", rows, term_width)
 
 
 def _print_union_variant_panels(cls: type) -> None:
