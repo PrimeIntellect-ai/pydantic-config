@@ -664,6 +664,28 @@ def test_optional_sub_field_nested():
     assert config.model.compile.dynamic is True
 
 
+def test_optional_nested_help_shows_subfields(capsys):
+    """--help should list sub-fields of Optional[BaseModel] fields even when their default is None.
+
+    The panel title should also surface the field's optional status.
+    """
+
+    class WandbConfig(BaseConfig):
+        project: str = "my-project"
+        entity: str = "my-team"
+
+    class Config(BaseConfig):
+        wandb: WandbConfig | None = None
+        seed: int = 42
+
+    with pytest.raises(SystemExit):
+        cli(Config, args=["--help"])
+    out = capsys.readouterr().out
+    assert "--wandb.project" in out
+    assert "--wandb.entity" in out
+    assert "wandb options (optional, default: None)" in out
+
+
 def test_optional_sub_field_with_bare_flag_and_regular_args():
     """Mixing sub-field overrides with regular args should work."""
 
