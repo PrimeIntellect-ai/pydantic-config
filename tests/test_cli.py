@@ -1666,7 +1666,7 @@ def test_render_help_returns_string_with_panels():
     assert "-h, --help" in out
     # Root scalar in main panel
     assert "--seed" in out
-    assert "(default: 42)" in out
+    assert "default: 42" in out
     # Plain sub-config panel
     assert "trainer options" in out
     assert "--trainer.lr" in out

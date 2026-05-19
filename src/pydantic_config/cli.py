@@ -587,15 +587,15 @@ def _format_default_for_help(default: Any) -> str:
     if isinstance(default, BaseModel):
         return ""
     if default is None:
-        return "(default: None)"
+        return "default: None"
     if repr(default) == "PydanticUndefined":
-        return "(required)"
+        return "required"
     if callable(default):
         try:
             return _format_default_for_help(default())
         except Exception:
             return ""
-    return f"(default: {default})"
+    return f"default: {default}"
 
 
 def _extract_field_docstrings(cls: type) -> dict[str, str]:
@@ -653,37 +653,71 @@ def _render_panel(
     """Render a box-drawn help panel.
 
     ``rows`` is a list of ``(flag, description, annotation)`` triples.
-    The annotation (e.g. ``(default: 42)``) is right-aligned to the panel
-    border so the parenthesized tags form a clean column.
+    The annotation is right-aligned to the panel border. If a description
+    is too long to fit before the annotation column it wraps onto a
+    continuation line (indented to the description column).
     """
     if not rows:
         return []
 
     flag_w = max(min_flag_w, max(len(f) for f, _, _ in rows))
+    anno_w = max((len(a) for _, _, a in rows), default=0)
+    desc_col = flag_w + 2  # where descriptions start
 
-    # Compute box width from the widest possible line.
-    widths: list[int] = []
-    for flag, desc, anno in rows:
-        left = f"{flag:<{flag_w}}  {desc}".rstrip()
-        w = len(left) + (2 + len(anno) if anno else 0)
-        widths.append(w)
-    content_width = max(max(widths), len(title) + 2)
-    box_total = max(term_width, content_width + 4, len(title) + 6)
+    # Box width is driven by the fixed-width columns (flags + annotations),
+    # never by description length — descriptions wrap to fit.
+    fixed_width = desc_col + anno_w + 2 if anno_w else desc_col
+    box_total = max(term_width, fixed_width + 4, len(title) + 6)
     inner = box_total - 4
 
+    # Maximum description width before it hits the annotation column.
+    max_desc_w = inner - desc_col - anno_w - 2 if anno_w else inner - desc_col
+
     horiz = "─" * max(1, box_total - len(title) - 5)
-    lines = [f"╭─ {title} {horiz}╮"]
+    out: list[str] = [f"╭─ {title} {horiz}╮"]
+
+    def _box_line(text: str) -> str:
+        return f"│ {text:<{inner}} │"
+
     for flag, desc, anno in rows:
-        left = f"{flag:<{flag_w}}  {desc}".rstrip()
-        if anno:
-            gap = inner - len(left) - len(anno)
-            line = f"{left}{' ' * max(2, gap)}{anno}"
+        if desc and max_desc_w > 0 and len(desc) > max_desc_w:
+            # Word-wrap the description so it doesn't collide with the
+            # annotation column.
+            words = desc.split()
+            wrapped: list[str] = []
+            cur = ""
+            for word in words:
+                if not cur:
+                    cur = word
+                elif len(cur) + 1 + len(word) <= max_desc_w:
+                    cur += " " + word
+                else:
+                    wrapped.append(cur)
+                    cur = word
+            if cur:
+                wrapped.append(cur)
+
+            # First line: flag + first chunk of description + annotation.
+            first_desc = wrapped[0] if wrapped else ""
+            left = f"{flag:<{flag_w}}  {first_desc}"
+            if anno:
+                gap = inner - len(left) - len(anno)
+                out.append(_box_line(f"{left}{' ' * max(2, gap)}{anno}"))
+            else:
+                out.append(_box_line(left.rstrip()))
+            # Continuation lines: indented to the description column.
+            for chunk in wrapped[1:]:
+                out.append(_box_line(f"{' ' * desc_col}{chunk}"))
         else:
-            line = left
-        truncated = line if len(line) <= inner else line[: inner - 1] + "…"
-        lines.append(f"│ {truncated:<{inner}} │")
-    lines.append(f"╰{'─' * (box_total - 2)}╯")
-    return lines
+            left = f"{flag:<{flag_w}}  {desc}".rstrip()
+            if anno:
+                gap = inner - len(left) - len(anno)
+                out.append(_box_line(f"{left}{' ' * max(2, gap)}{anno}"))
+            else:
+                out.append(_box_line(left))
+
+    out.append(f"╰{'─' * (box_total - 2)}╯")
+    return out
 
 
 def _strip_annotated(annotation):

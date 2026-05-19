@@ -38,7 +38,8 @@ training scripts.
 
 `--help` is auto-generated from the model. Each `BaseModel` field becomes its
 own panel; discriminated-union variants get a panel each; `Optional[BaseModel]`
-fields are annotated `(optional, default: None)`.
+fields are annotated `(optional, default: None)`. Descriptions are sourced from
+`Field(description=...)` or a PEP 224 attribute docstring below the field.
 
 ```bash
 python examples/train.py --help
@@ -51,13 +52,17 @@ python examples/train.py --help
 ### Config files via `@`
 
 Load a whole config from a TOML, YAML, or JSON file. CLI args layered on top
-always win — same precedence as `default` ⊂ file ⊂ CLI.
+always win — same precedence as `default` < file < CLI.
 
 ```bash
 python examples/train.py @ examples/train.toml
 python examples/train.py @ examples/train.yaml
 python examples/train.py @ examples/train.toml --seed 0 --no-model.compile
 ```
+
+<p align="center">
+  <img src="assets/config_file.svg" alt="Config file via @" width="700">
+</p>
 
 ### Required fields
 
@@ -69,7 +74,7 @@ python examples/train.py   # errors: --run-name is required
 ```
 
 <p align="center">
-  <img src="assets/required_error.svg" alt="Missing required argument" width="500">
+  <img src="assets/required_error.svg" alt="Missing required argument" width="700">
 </p>
 
 ### Nested config groups
@@ -81,6 +86,10 @@ CLI; pydantic still validates against the snake_case attribute.
 python examples/train.py --run-name r1 --model.hidden-size 4096 --data.num-workers 16
 ```
 
+<p align="center">
+  <img src="assets/nested.svg" alt="Nested config groups" width="700">
+</p>
+
 ### Bool flags and `--no-` negation
 
 Bare `--flag` sets a bool to `True`; `--no-flag` sets it to `False`. Works on
@@ -89,6 +98,10 @@ nested fields too.
 ```bash
 python examples/train.py --run-name r1 --no-model.compile --no-data.shuffle
 ```
+
+<p align="center">
+  <img src="assets/bool_negation.svg" alt="Bool --no- negation" width="700">
+</p>
 
 ### Lists
 
@@ -100,6 +113,10 @@ python examples/train.py --run-name r1 --checkpoint-steps 100 200 500
 python examples/train.py --run-name r1 --checkpoint-steps '[100, 200, 500]'
 ```
 
+<p align="center">
+  <img src="assets/lists.svg" alt="List values" width="700">
+</p>
+
 ### Dicts
 
 Dict fields take a JSON literal on the CLI. A TOML/YAML dict and a CLI dict
@@ -108,6 +125,10 @@ deep-merge — CLI keys win on conflict but don't wipe the file's keys.
 ```bash
 python examples/train.py --run-name r1 --extra-kwargs '{"seq_len": 4096}'
 ```
+
+<p align="center">
+  <img src="assets/dicts.svg" alt="Dict values" width="700">
+</p>
 
 ### Optional sub-configs
 
@@ -121,6 +142,10 @@ python examples/train.py --run-name r1 --wandb.project demo --wandb.entity me  #
 python examples/train.py --run-name r1 --wandb @ examples/wandb.toml           # enable from a file
 ```
 
+<p align="center">
+  <img src="assets/optional.svg" alt="Optional sub-config" width="700">
+</p>
+
 ### Discriminated unions
 
 Multi-variant fields (e.g. `optimizer: AdamWConfig | MuonConfig`) are switched
@@ -133,6 +158,10 @@ python examples/train.py --run-name r1 --optimizer.type muon --optimizer.lr 2e-3
 python examples/train.py --run-name r1 --optimizer @ examples/optimizer.toml       # load a variant from a file
 ```
 
+<p align="center">
+  <img src="assets/union_switch.svg" alt="Discriminated union" width="700">
+</p>
+
 ### Disabling an optional sub-config
 
 An optional sub-config that's been enabled (by a file or defaults) can be
@@ -140,9 +169,13 @@ turned off again with `--no-<name>` or by passing the literal `None`.
 In TOML, write `wandb = "None"` (the string `"None"` is coerced to null).
 
 ```bash
-python examples/train.py --run-name r1 --wandb @ examples/wandb.toml --no-wandb    # file + disable
-python examples/train.py --run-name r1 --wandb None                                 # explicit None
+python examples/train.py --run-name r1 --wandb --no-wandb                       # enable then disable
+python examples/train.py --run-name r1 --wandb None                             # explicit None
 ```
+
+<p align="center">
+  <img src="assets/disable_optional.svg" alt="Disable optional sub-config" width="700">
+</p>
 
 ### Validation aliases
 
@@ -155,6 +188,46 @@ names is safe (CLI still wins on conflict).
 python examples/train.py --run-name r1 --random-seed 7      # CLI alias
 python examples/train.py @ examples/train.toml              # TOML uses random_seed
 python examples/train.py @ examples/train.toml --seed 99    # TOML alias + CLI canonical override
+```
+
+<p align="center">
+  <img src="assets/alias.svg" alt="Validation alias" width="700">
+</p>
+
+### Field descriptions
+
+Descriptions shown in `--help` can be set via `Field(description=...)` or a
+PEP 224 attribute docstring (a string literal directly after the field). The
+docstring form keeps simple fields clean; `Field(description=...)` takes
+precedence when both are present.
+
+```python
+class ModelConfig(BaseConfig):
+    hidden_size: int = 2048
+    """Transformer hidden dimension"""              # PEP 224 docstring
+
+    seed: int = Field(42, description="Random seed")  # Field(description=...)
+```
+
+### `--flag=value` form
+
+Both `--flag value` and `--flag=value` are accepted.
+
+```bash
+python examples/train.py --run-name=r1 --seed=7
+```
+
+### `--plain` and `--no-wide`
+
+`--plain` disables ANSI colors; `--no-wide` caps panel width at 80 columns.
+Both can also be set via environment variables (`PYDANTIC_CONFIG_PLAIN`,
+`PYDANTIC_CONFIG_WIDE`) or as explicit `cli()` keyword arguments (which take
+highest precedence).
+
+```bash
+python examples/train.py --plain --help               # no colors
+python examples/train.py --no-wide --help              # panels capped at 80 columns
+PYDANTIC_CONFIG_PLAIN=1 python examples/train.py       # env var
 ```
 
 ### Validation errors point at the CLI flag
@@ -175,8 +248,12 @@ python examples/train.py --run-name r1 --seed nope
 Typos are caught with a `difflib`-powered "did you mean" hint.
 
 ```bash
-python examples/train.py --run-name r1 --seedz 5   # → did you mean --seed?
+python examples/train.py --run-name r1 --seedz 5   # -> did you mean --seed?
 ```
+
+<p align="center">
+  <img src="assets/unknown_flag.svg" alt="Unknown flag suggestion" width="700">
+</p>
 
 ### Config file not found
 

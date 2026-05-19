@@ -19,49 +19,49 @@
         font-weight: 700;
     }
 
-    .terminal-946955190-matrix {
+    .terminal-1005675542-matrix {
         font-family: Fira Code, monospace;
         font-size: 20px;
         line-height: 24.4px;
         font-variant-east-asian: full-width;
     }
 
-    .terminal-946955190-title {
+    .terminal-1005675542-title {
         font-size: 18px;
         font-weight: bold;
         font-family: arial;
     }
 
-    .terminal-946955190-r1 { fill: #cc555a }
-.terminal-946955190-r2 { fill: #c5c8c6 }
-.terminal-946955190-r3 { fill: #cc555a;font-weight: bold }
+    .terminal-1005675542-r1 { fill: #cc555a }
+.terminal-1005675542-r2 { fill: #c5c8c6 }
+.terminal-1005675542-r3 { fill: #cc555a;font-weight: bold }
     </style>
 
     <defs>
-    <clipPath id="terminal-946955190-clip-terminal">
+    <clipPath id="terminal-1005675542-clip-terminal">
       <rect x="0" y="0" width="1341.0" height="72.19999999999999" />
     </clipPath>
-    <clipPath id="terminal-946955190-line-0">
+    <clipPath id="terminal-1005675542-line-0">
     <rect x="0" y="1.5" width="1342" height="24.65"/>
             </clipPath>
-<clipPath id="terminal-946955190-line-1">
+<clipPath id="terminal-1005675542-line-1">
     <rect x="0" y="25.9" width="1342" height="24.65"/>
             </clipPath>
     </defs>
 
-    <rect fill="#292929" stroke="rgba(255,255,255,0.35)" stroke-width="1" x="1" y="1" width="1358" height="121.2" rx="8"/><text class="terminal-946955190-title" fill="#c5c8c6" text-anchor="middle" x="679" y="27">Config&#160;File&#160;Not&#160;Found</text>
+    <rect fill="#292929" stroke="rgba(255,255,255,0.35)" stroke-width="1" x="1" y="1" width="1358" height="121.2" rx="8"/><text class="terminal-1005675542-title" fill="#c5c8c6" text-anchor="middle" x="679" y="27">Config&#160;file&#160;not&#160;found</text>
             <g transform="translate(26,22)">
             <circle cx="0" cy="0" r="7" fill="#ff5f57"/>
             <circle cx="22" cy="0" r="7" fill="#febc2e"/>
             <circle cx="44" cy="0" r="7" fill="#28c840"/>
             </g>
         
-    <g transform="translate(9, 41)" clip-path="url(#terminal-946955190-clip-terminal)">
+    <g transform="translate(9, 41)" clip-path="url(#terminal-1005675542-clip-terminal)">
     
-    <g class="terminal-946955190-matrix">
-    <text class="terminal-946955190-r1" x="0" y="20" textLength="12.2" clip-path="url(#terminal-946955190-line-0)">╭</text><text class="terminal-946955190-r2" x="12.2" y="20" textLength="24.4" clip-path="url(#terminal-946955190-line-0)">─&#160;</text><text class="terminal-946955190-r3" x="36.6" y="20" textLength="207.4" clip-path="url(#terminal-946955190-line-0)">Config&#160;file&#160;error</text><text class="terminal-946955190-r1" x="256.2" y="20" textLength="1085.8" clip-path="url(#terminal-946955190-line-0)">────────────────────────────────────────────────────────────────────────────────────────╮</text><text class="terminal-946955190-r2" x="1342" y="20" textLength="12.2" clip-path="url(#terminal-946955190-line-0)">
-</text><text class="terminal-946955190-r1" x="0" y="44.4" textLength="12.2" clip-path="url(#terminal-946955190-line-1)">│</text><text class="terminal-946955190-r2" x="12.2" y="44.4" textLength="1317.6" clip-path="url(#terminal-946955190-line-1)">&#160;Config&#160;file&#160;not&#160;found:&#160;nonexistent.toml&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;</text><text class="terminal-946955190-r1" x="1329.8" y="44.4" textLength="12.2" clip-path="url(#terminal-946955190-line-1)">│</text><text class="terminal-946955190-r2" x="1342" y="44.4" textLength="12.2" clip-path="url(#terminal-946955190-line-1)">
-</text><text class="terminal-946955190-r1" x="0" y="68.8" textLength="1342" clip-path="url(#terminal-946955190-line-2)">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text><text class="terminal-946955190-r2" x="1342" y="68.8" textLength="12.2" clip-path="url(#terminal-946955190-line-2)">
+    <g class="terminal-1005675542-matrix">
+    <text class="terminal-1005675542-r1" x="0" y="20" textLength="12.2" clip-path="url(#terminal-1005675542-line-0)">╭</text><text class="terminal-1005675542-r2" x="12.2" y="20" textLength="24.4" clip-path="url(#terminal-1005675542-line-0)">─&#160;</text><text class="terminal-1005675542-r3" x="36.6" y="20" textLength="207.4" clip-path="url(#terminal-1005675542-line-0)">Config&#160;file&#160;error</text><text class="terminal-1005675542-r1" x="256.2" y="20" textLength="1085.8" clip-path="url(#terminal-1005675542-line-0)">────────────────────────────────────────────────────────────────────────────────────────╮</text><text class="terminal-1005675542-r2" x="1342" y="20" textLength="12.2" clip-path="url(#terminal-1005675542-line-0)">
+</text><text class="terminal-1005675542-r1" x="0" y="44.4" textLength="12.2" clip-path="url(#terminal-1005675542-line-1)">│</text><text class="terminal-1005675542-r2" x="12.2" y="44.4" textLength="1317.6" clip-path="url(#terminal-1005675542-line-1)">&#160;Config&#160;file&#160;not&#160;found:&#160;nonexistent.toml&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;</text><text class="terminal-1005675542-r1" x="1329.8" y="44.4" textLength="12.2" clip-path="url(#terminal-1005675542-line-1)">│</text><text class="terminal-1005675542-r2" x="1342" y="44.4" textLength="12.2" clip-path="url(#terminal-1005675542-line-1)">
+</text><text class="terminal-1005675542-r1" x="0" y="68.8" textLength="1342" clip-path="url(#terminal-1005675542-line-2)">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text><text class="terminal-1005675542-r2" x="1342" y="68.8" textLength="12.2" clip-path="url(#terminal-1005675542-line-2)">
 </text>
     </g>
     </g>
