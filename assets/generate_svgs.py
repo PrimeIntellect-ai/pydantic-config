@@ -66,11 +66,11 @@ if __name__ == "__main__":
 
     # 1. Help
     out = capture(TRAIN + ["--help"])
-    to_svg(extract_help(out), "python examples/train.py --help", "assets/help.svg")
+    to_svg(extract_help(out), "uv run python examples/train.py --help", "assets/help.svg")
 
     # 2. Config file
     to_svg(
-        session("python examples/train.py @ examples/train.toml", TRAIN + ["@", "examples/train.toml"]),
+        session("uv run python examples/train.py @ examples/train.toml", TRAIN + ["@", "examples/train.toml"]),
         "Config file via @",
         "assets/config_file.svg",
     )
@@ -81,7 +81,7 @@ if __name__ == "__main__":
     # 4. Nested override
     to_svg(
         session(
-            "python examples/train.py --run-name r1 --model.hidden-size 4096 --data.num-workers 16",
+            "uv run python examples/train.py --run-name r1 --model.hidden-size 4096 --data.num-workers 16",
             TRAIN + ["--run-name", "r1", "--model.hidden-size", "4096", "--data.num-workers", "16"],
         ),
         "Nested config groups",
@@ -91,7 +91,7 @@ if __name__ == "__main__":
     # 5. Bool --no-
     to_svg(
         session(
-            "python examples/train.py --run-name r1 --no-model.compile --no-data.shuffle",
+            "uv run python examples/train.py --run-name r1 --no-model.compile --no-data.shuffle",
             TRAIN + ["--run-name", "r1", "--no-model.compile", "--no-data.shuffle"],
         ),
         "Bool --no- negation",
@@ -101,7 +101,7 @@ if __name__ == "__main__":
     # 6. Lists
     to_svg(
         session(
-            "python examples/train.py --run-name r1 --checkpoint-steps 100 200 500",
+            "uv run python examples/train.py --run-name r1 --checkpoint-steps 100 200 500",
             TRAIN + ["--run-name", "r1", "--checkpoint-steps", "100", "200", "500"],
         ),
         "List values",
@@ -121,7 +121,7 @@ if __name__ == "__main__":
     # 8. Optional sub-config
     to_svg(
         session(
-            "python examples/train.py --run-name r1 --wandb.project demo --wandb.entity me",
+            "uv run python examples/train.py --run-name r1 --wandb.project demo --wandb.entity me",
             TRAIN + ["--run-name", "r1", "--wandb.project", "demo", "--wandb.entity", "me"],
         ),
         "Optional sub-config",
@@ -131,7 +131,7 @@ if __name__ == "__main__":
     # 9. Discriminated union switch
     to_svg(
         session(
-            "python examples/train.py --run-name r1 --optimizer.type muon --optimizer.lr 2e-3",
+            "uv run python examples/train.py --run-name r1 --optimizer.type muon --optimizer.lr 2e-3",
             TRAIN + ["--run-name", "r1", "--optimizer.type", "muon", "--optimizer.lr", "2e-3"],
         ),
         "Discriminated union",
@@ -141,7 +141,7 @@ if __name__ == "__main__":
     # 10. Disable optional
     to_svg(
         session(
-            "python examples/train.py --run-name r1 --wandb --no-wandb",
+            "uv run python examples/train.py --run-name r1 --wandb --no-wandb",
             TRAIN + ["--run-name", "r1", "--wandb", "--no-wandb"],
         ),
         "Disable optional sub-config",
@@ -151,7 +151,7 @@ if __name__ == "__main__":
     # 11. Validation alias
     to_svg(
         session(
-            "python examples/train.py --run-name r1 --random-seed 7",
+            "uv run python examples/train.py --run-name r1 --random-seed 7",
             TRAIN + ["--run-name", "r1", "--random-seed", "7"],
         ),
         "Validation alias",

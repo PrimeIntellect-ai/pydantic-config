@@ -15,17 +15,17 @@ config = cli(Config)
 ## Install
 
 ```bash
-pip install git+https://github.com/PrimeIntellect-ai/pydantic-config
+uv add git+https://github.com/PrimeIntellect-ai/pydantic-config
 ```
 
 For TOML support:
 ```bash
-pip install "prime-pydantic-config[toml] @ git+https://github.com/PrimeIntellect-ai/pydantic-config"
+uv add "prime-pydantic-config[toml] @ git+https://github.com/PrimeIntellect-ai/pydantic-config"
 ```
 
 For all formats (TOML + YAML):
 ```bash
-pip install "prime-pydantic-config[all] @ git+https://github.com/PrimeIntellect-ai/pydantic-config"
+uv add "prime-pydantic-config[all] @ git+https://github.com/PrimeIntellect-ai/pydantic-config"
 ```
 
 ## Features
@@ -42,7 +42,7 @@ fields are annotated `(optional, default: None)`. Descriptions are sourced from
 `Field(description=...)` or a PEP 224 attribute docstring below the field.
 
 ```bash
-python examples/train.py --help
+uv run python examples/train.py --help
 ```
 
 <p align="center">
@@ -55,9 +55,9 @@ Load a whole config from a TOML, YAML, or JSON file. CLI args layered on top
 always win — same precedence as `default` < file < CLI.
 
 ```bash
-python examples/train.py @ examples/train.toml
-python examples/train.py @ examples/train.yaml
-python examples/train.py @ examples/train.toml --seed 0 --no-model.compile
+uv run python examples/train.py @ examples/train.toml
+uv run python examples/train.py @ examples/train.yaml
+uv run python examples/train.py @ examples/train.toml --seed 0 --no-model.compile
 ```
 
 <p align="center">
@@ -70,7 +70,7 @@ A field without a default must be passed. The error is rendered as a boxed
 message naming the missing CLI flag, not a raw pydantic traceback.
 
 ```bash
-python examples/train.py   # errors: --run-name is required
+uv run python examples/train.py   # errors: --run-name is required
 ```
 
 <p align="center">
@@ -83,7 +83,7 @@ Sub-configs are addressed via dotted paths. Field names are kebab-cased on the
 CLI; pydantic still validates against the snake_case attribute.
 
 ```bash
-python examples/train.py --run-name r1 --model.hidden-size 4096 --data.num-workers 16
+uv run python examples/train.py --run-name r1 --model.hidden-size 4096 --data.num-workers 16
 ```
 
 <p align="center">
@@ -96,7 +96,7 @@ Bare `--flag` sets a bool to `True`; `--no-flag` sets it to `False`. Works on
 nested fields too.
 
 ```bash
-python examples/train.py --run-name r1 --no-model.compile --no-data.shuffle
+uv run python examples/train.py --run-name r1 --no-model.compile --no-data.shuffle
 ```
 
 <p align="center">
@@ -109,8 +109,8 @@ Lists accept either space-separated values or a JSON literal. Negative numbers
 (e.g. `-1e-3`) are values, not flags.
 
 ```bash
-python examples/train.py --run-name r1 --checkpoint-steps 100 200 500
-python examples/train.py --run-name r1 --checkpoint-steps '[100, 200, 500]'
+uv run python examples/train.py --run-name r1 --checkpoint-steps 100 200 500
+uv run python examples/train.py --run-name r1 --checkpoint-steps '[100, 200, 500]'
 ```
 
 <p align="center">
@@ -123,7 +123,7 @@ Dict fields take a JSON literal on the CLI. A TOML/YAML dict and a CLI dict
 deep-merge — CLI keys win on conflict but don't wipe the file's keys.
 
 ```bash
-python examples/train.py --run-name r1 --extra-kwargs '{"seq_len": 4096}'
+uv run python examples/train.py --run-name r1 --extra-kwargs '{"seq_len": 4096}'
 ```
 
 <p align="center">
@@ -137,9 +137,9 @@ turns it on with defaults; a sub-field flag both activates the sub-config and
 overrides the field.
 
 ```bash
-python examples/train.py --run-name r1 --wandb                                 # enable with defaults
-python examples/train.py --run-name r1 --wandb.project demo --wandb.entity me  # enable + override
-python examples/train.py --run-name r1 --wandb @ examples/wandb.toml           # enable from a file
+uv run python examples/train.py --run-name r1 --wandb                                 # enable with defaults
+uv run python examples/train.py --run-name r1 --wandb.project demo --wandb.entity me  # enable + override
+uv run python examples/train.py --run-name r1 --wandb @ examples/wandb.toml           # enable from a file
 ```
 
 <p align="center">
@@ -153,9 +153,9 @@ by the `type` tag. Each variant renders its own help panel. The default
 variant's `type` is auto-injected, so partial overrides keep the same variant.
 
 ```bash
-python examples/train.py --run-name r1 --optimizer.weight-decay 0.05               # stay on default (adamw)
-python examples/train.py --run-name r1 --optimizer.type muon --optimizer.lr 2e-3   # switch to muon
-python examples/train.py --run-name r1 --optimizer @ examples/optimizer.toml       # load a variant from a file
+uv run python examples/train.py --run-name r1 --optimizer.weight-decay 0.05               # stay on default (adamw)
+uv run python examples/train.py --run-name r1 --optimizer.type muon --optimizer.lr 2e-3   # switch to muon
+uv run python examples/train.py --run-name r1 --optimizer @ examples/optimizer.toml       # load a variant from a file
 ```
 
 <p align="center">
@@ -169,8 +169,8 @@ turned off again with `--no-<name>` or by passing the literal `None`.
 In TOML, write `wandb = "None"` (the string `"None"` is coerced to null).
 
 ```bash
-python examples/train.py --run-name r1 --wandb --no-wandb                       # enable then disable
-python examples/train.py --run-name r1 --wandb None                             # explicit None
+uv run python examples/train.py --run-name r1 --wandb --no-wandb                       # enable then disable
+uv run python examples/train.py --run-name r1 --wandb None                             # explicit None
 ```
 
 <p align="center">
@@ -185,9 +185,9 @@ the canonical key before validation, so mixing TOML + CLI under different
 names is safe (CLI still wins on conflict).
 
 ```bash
-python examples/train.py --run-name r1 --random-seed 7      # CLI alias
-python examples/train.py @ examples/train.toml              # TOML uses random_seed
-python examples/train.py @ examples/train.toml --seed 99    # TOML alias + CLI canonical override
+uv run python examples/train.py --run-name r1 --random-seed 7      # CLI alias
+uv run python examples/train.py @ examples/train.toml              # TOML uses random_seed
+uv run python examples/train.py @ examples/train.toml --seed 99    # TOML alias + CLI canonical override
 ```
 
 <p align="center">
@@ -214,7 +214,7 @@ class ModelConfig(BaseConfig):
 Both `--flag value` and `--flag=value` are accepted.
 
 ```bash
-python examples/train.py --run-name=r1 --seed=7
+uv run python examples/train.py --run-name=r1 --seed=7
 ```
 
 ### `--plain` and `--no-wide`
@@ -225,9 +225,9 @@ Both can also be set via environment variables (`PYDANTIC_CONFIG_PLAIN`,
 highest precedence).
 
 ```bash
-python examples/train.py --plain --help               # no colors
-python examples/train.py --no-wide --help              # panels capped at 80 columns
-PYDANTIC_CONFIG_PLAIN=1 python examples/train.py       # env var
+uv run python examples/train.py --plain --help               # no colors
+uv run python examples/train.py --no-wide --help              # panels capped at 80 columns
+PYDANTIC_CONFIG_PLAIN=1 uv run python examples/train.py       # env var
 ```
 
 ### Validation errors point at the CLI flag
@@ -236,7 +236,7 @@ Pydantic's `ValidationError` is wrapped so the user sees the offending flag
 inline, not a raw `pydantic_core` traceback.
 
 ```bash
-python examples/train.py --run-name r1 --seed nope
+uv run python examples/train.py --run-name r1 --seed nope
 ```
 
 <p align="center">
@@ -248,7 +248,7 @@ python examples/train.py --run-name r1 --seed nope
 Typos are caught with a `difflib`-powered "did you mean" hint.
 
 ```bash
-python examples/train.py --run-name r1 --seedz 5   # -> did you mean --seed?
+uv run python examples/train.py --run-name r1 --seedz 5   # -> did you mean --seed?
 ```
 
 <p align="center">
@@ -258,7 +258,7 @@ python examples/train.py --run-name r1 --seedz 5   # -> did you mean --seed?
 ### Config file not found
 
 ```bash
-python examples/train.py @ nonexistent.toml
+uv run python examples/train.py @ nonexistent.toml
 ```
 
 <p align="center">
