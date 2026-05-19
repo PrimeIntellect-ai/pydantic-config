@@ -32,10 +32,10 @@ import os
 import shutil
 import sys
 import types
-from typing import Literal, TypeVar, Union, get_args, get_origin, overload
+from typing import Any, Literal, Optional, TypeVar, Union, get_args, get_origin, overload
 
 import tyro
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
 T = TypeVar("T")
 
@@ -306,11 +306,206 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
-def _dict_to_instance(cls: type[T], data: dict) -> T:
-    """Convert a dictionary to an instance of a Pydantic model."""
-    if isinstance(cls, type) and issubclass(cls, BaseModel):
-        return cls.model_validate(data)
-    raise TypeError(f"Cannot convert dict to {cls}: not a Pydantic BaseModel")
+def _strip_annotated(annotation):
+    """Unwrap ``Annotated[T, ...]`` → ``T``."""
+    if hasattr(annotation, "__metadata__"):
+        return get_args(annotation)[0]
+    return annotation
+
+
+def _is_union(annotation) -> bool:
+    origin = get_origin(annotation)
+    return origin is Union or origin is getattr(types, "UnionType", None)
+
+
+# Cache mirror classes per (root cls) so repeated cli(cls) calls reuse them.
+_MIRROR_CACHE: "dict[type, type]" = {}
+
+
+def _mirror_annotation(annotation, cache: dict):
+    """Compute the mirror form of a field annotation for the all-Optional mirror.
+
+    The mirror class is used to capture CLI overrides as a sparse dict (see
+    ``cli()``). Annotations are rewritten so every value is plausible for tyro
+    to parse while staying compatible with ``model_dump(exclude_none=True)``
+    to recover only what the user actually wrote:
+
+      - Plain ``BaseModel`` → recurse into a mirror of that sub-model.
+      - ``Optional[BaseModel]`` / discriminated union: not mirrored (CLI args
+        for these paths are pre-extracted by ``_expand_bare_optional_flags``
+        before tyro runs). The mirror field becomes ``Any`` with default
+        ``None`` so tyro ignores any leftover overrides.
+      - ``list[BaseModel]`` → list of the mirror sub-model.
+      - ``dict[K, BaseModel]`` → dict mapping K to mirror sub-model.
+      - Annotated[T, ...] → Annotated[mirror(T), ...] (preserves metadata
+        that tyro / pydantic care about).
+      - Everything else → keep as-is.
+    """
+    metadata = ()
+    inner = annotation
+    if hasattr(inner, "__metadata__"):
+        metadata = inner.__metadata__
+        inner = get_args(inner)[0]
+
+    origin = get_origin(inner)
+
+    if _is_union(inner):
+        # Union of BaseModels or Optional[BaseModel] — pre-extracted before tyro,
+        # so the mirror just needs to accept any value here without parsing it.
+        non_none = [a for a in get_args(inner) if a is not type(None)]
+        if non_none and all(isinstance(a, type) and issubclass(a, BaseModel) for a in non_none):
+            return Any
+        # Other unions (e.g. int | str): mirror each arm individually.
+        new_args = tuple(_mirror_annotation(a, cache) for a in get_args(inner))
+        return Union[new_args]
+
+    if isinstance(inner, type) and issubclass(inner, BaseModel):
+        mirrored = _build_mirror_cls(inner, cache)
+        return _reapply_annotated(mirrored, metadata)
+
+    if origin is list:
+        args = get_args(inner)
+        if args:
+            item = _mirror_annotation(args[0], cache)
+            return _reapply_annotated(list[item], metadata)
+        return _reapply_annotated(inner, metadata)
+
+    if origin is dict:
+        args = get_args(inner)
+        if len(args) == 2:
+            key_ann, val_ann = args
+            return _reapply_annotated(dict[key_ann, _mirror_annotation(val_ann, cache)], metadata)
+        return _reapply_annotated(inner, metadata)
+
+    return _reapply_annotated(inner, metadata)
+
+
+def _reapply_annotated(inner, metadata):
+    if not metadata:
+        return inner
+    from typing import Annotated  # local import to avoid widening top-of-file imports
+
+    return Annotated[(inner, *metadata)]
+
+
+def _build_mirror_cls(cls: type, cache: dict | None = None) -> type:
+    """Build a "sparse mirror" of ``cls`` for CLI-override capture.
+
+    The mirror has the same field names as ``cls`` but every primitive field
+    becomes ``Optional[T] = None`` and every sub-BaseModel becomes
+    ``MirrorOfSub = MirrorOfSub()`` (non-Optional with an empty-default
+    instance so tyro will accept ``--sub.field value`` overrides).
+
+    Dumping the resulting instance with ``model_dump(exclude_none=True)``
+    yields a sparse dict containing only the values the user actually set on
+    the CLI, which can be deep-merged into the TOML dict and validated against
+    the real ``cls`` exactly once.
+    """
+    if cache is None:
+        cache = _MIRROR_CACHE
+    if cls in cache:
+        return cache[cls]
+
+    field_defs: dict[str, tuple] = {}
+    # Insert a sentinel before recursing to break cycles (self-referential models).
+    cache[cls] = cls  # placeholder
+
+    for name, finfo in cls.model_fields.items():
+        mirrored_ann = _mirror_annotation(finfo.annotation, cache)
+        inner = _strip_annotated(mirrored_ann)
+        # Sub-BaseModel: non-Optional with empty default so tyro accepts dotted overrides.
+        if isinstance(inner, type) and issubclass(inner, BaseModel) and inner not in (BaseModel,):
+            field_defs[name] = (mirrored_ann, Field(default_factory=inner))
+        else:
+            # Wrap leaf in Optional so it can default to None and be dropped by exclude_none.
+            field_defs[name] = (Optional[mirrored_ann], None)
+
+    mirror = create_model(
+        f"_{cls.__name__}__Mirror",
+        __base__=BaseModel,
+        **field_defs,
+    )
+    mirror.model_config = ConfigDict(extra="ignore", arbitrary_types_allowed=True)
+    cache[cls] = mirror
+    return mirror
+
+
+def _enumerate_cli_paths(cls: type, prefix: str = "") -> set[str]:
+    """Walk ``cls.model_fields`` to enumerate every dotted kebab-case path that
+    can appear as a ``--flag`` on the CLI.
+
+    Used together with ``_scan_cli_set_paths`` to detect *which* paths the user
+    actually typed in argv — separate from *what value* tyro parsed. This is
+    what lets us tell ``--seq-len 0`` apart from "didn't set seq_len" even
+    though both leave ``seq_len`` equal to the field default.
+    """
+    paths: set[str] = set()
+    if not hasattr(cls, "model_fields"):
+        return paths
+    for name, finfo in cls.model_fields.items():
+        kebab = name.replace("_", "-")
+        full = f"{prefix}.{kebab}" if prefix else kebab
+        ann = _strip_annotated(finfo.annotation)
+        if _is_union(ann):
+            non_none = [a for a in get_args(ann) if a is not type(None)]
+            if len(non_none) == 1:
+                ann = non_none[0]
+        if isinstance(ann, type) and issubclass(ann, BaseModel):
+            paths.update(_enumerate_cli_paths(ann, prefix=full))
+        else:
+            paths.add(full)
+    return paths
+
+
+def _scan_cli_set_paths(args: list[str], valid_paths: set[str]) -> set[str]:
+    """Identify which dotted snake-case paths from ``valid_paths`` were
+    explicitly mentioned in ``args`` as ``--flag`` or ``--flag=value``.
+
+    Recognises boolean negation: ``--no-thing`` counts as setting ``thing``.
+    Returns snake-case keys (so they match Pydantic attribute names).
+    """
+    seen: set[str] = set()
+    for arg in args:
+        if not arg.startswith("--"):
+            continue
+        flag = arg[2:]
+        if "=" in flag:
+            flag = flag.split("=", 1)[0]
+        if flag in valid_paths:
+            seen.add(flag.replace("-", "_"))
+            continue
+        if flag.startswith("no-"):
+            unnegated = flag[3:]
+            if unnegated in valid_paths:
+                seen.add(unnegated.replace("-", "_"))
+    return seen
+
+
+def _extract_set_paths(instance: BaseModel, set_paths: set[str]) -> dict:
+    """Build a sparse dict by reading only the listed dotted snake-case paths
+    off ``instance``. Used to recover user-supplied CLI values after tyro has
+    flattened everything onto a fully-populated mirror instance.
+    """
+    result: dict = {}
+    for path in set_paths:
+        parts = path.split(".")
+        value: Any = instance
+        ok = True
+        for part in parts:
+            if value is None or not hasattr(value, part):
+                ok = False
+                break
+            value = getattr(value, part)
+        if not ok:
+            continue
+        if isinstance(value, BaseModel):
+            value = value.model_dump()
+        # Build nested dict at this dotted path.
+        leaf: dict = result
+        for part in parts[:-1]:
+            leaf = leaf.setdefault(part, {})
+        leaf[parts[-1]] = value
+    return result
 
 
 def _process_args(args: list[str]) -> tuple[list[str], dict, dict[str, dict]]:
@@ -840,79 +1035,44 @@ def cli(
         args = sys.argv[1:]
 
     try:
-        # Process args to extract config files
+        # 1. Parse TOML / nested config files referenced via ``@`` into a raw dict.
         remaining_args, root_config, nested_configs = _process_args(args)
-
-        # Merge all configs: root first, then nested configs
-        merged_config = root_config
+        toml_dict = root_config
         for key_path, config in nested_configs.items():
             nested = _nest_config(key_path, config)
-            merged_config = _deep_merge(merged_config, nested)
+            toml_dict = _deep_merge(toml_dict, nested)
 
-        # Expand bare flags for Optional[BaseModel] fields (e.g. --model.compile)
+        # 2. Pre-extract CLI overrides for types tyro can't parse directly:
+        #    - Optional[BaseModel] / discriminated-union sub-field flags
+        #      (e.g. ``--wandb.project foo``, ``--data.type b``)
+        #    - JSON-encoded dict/list values (e.g. ``--env-ratios '[0.7, 0.3]'``)
+        # These args are stripped from ``remaining_args`` and accumulated into
+        # ``cli_overrides`` as raw strings / parsed JSON.
+        cli_overrides: dict = {}
         optional_paths = _find_optional_model_paths(cls)
         if optional_paths:
             remaining_args, bare_overrides = _expand_bare_optional_flags(remaining_args, optional_paths)
-            if bare_overrides:
-                merged_config = _deep_merge(merged_config, bare_overrides)
+            cli_overrides = _deep_merge(cli_overrides, bare_overrides)
 
-        # Extract JSON-encoded values for dict/list fields
-        # (e.g. --extra-kwargs '{"key": 123}', --env-ratios '[0.7, 0.3]')
         json_paths = _find_json_value_field_paths(cls)
         if json_paths:
             remaining_args, json_overrides = _extract_json_value_args(remaining_args, json_paths)
-            if json_overrides:
-                merged_config = _deep_merge(merged_config, json_overrides)
+            cli_overrides = _deep_merge(cli_overrides, json_overrides)
 
-        # Build default from merged config
-        config_default = None
-        if merged_config:
-            config_default = _build_default_from_config(cls, merged_config, config_path="merged config")
-
-        # Merge with provided default
-        final_default = default
-        if config_default is not None:
-            final_default = config_default
-
-        # Inject placeholder instances for Optional[BaseModel] fields that are
-        # still None so tyro renders their sub-fields in --help. The placeholders
-        # are reset to None on the result for any path the user didn't activate.
+        # 3. Handle ``--help`` against the real ``cls`` so users see its schema.
+        #    Build a stitched default that includes any caller-provided default
+        #    layered with TOML so optional sub-fields render in the help panels.
         inactive_optional_paths: list[str] = []
-        optional_inner_classes = _find_optional_model_inner_classes(cls)
-        if optional_inner_classes:
-            placeholder_config: dict = {}
-            for path, inner_cls in optional_inner_classes.items():
-                if _path_is_set_in_config(merged_config, path):
-                    continue
-                if default is not None and _path_value_on_model(default, path) is not None:
-                    continue
-                snake_path = path.replace("-", "_")
-                placeholder = inner_cls().model_dump()
-                placeholder_config = _deep_merge(placeholder_config, _nest_config(snake_path, placeholder))
-                inactive_optional_paths.append(path)
-            if placeholder_config:
-                placeholder_default = _build_default_from_config(
-                    cls,
-                    _deep_merge(merged_config, placeholder_config),
-                    config_path="merged config",
-                )
-                if placeholder_default is not None:
-                    final_default = placeholder_default
-
-        # Call tyro with processed args.
-        # AvoidSubcommands prevents tyro from creating subcommands for union
-        # types (e.g. discriminated unions, Optional[BaseModel]). This avoids
-        # tyro errors on dict[str, Any] fields in non-default union variants
-        # and keeps CLI usage simple — variant selection belongs in config files.
         wants_help = "--help" in remaining_args or "-h" in remaining_args
         if wants_help:
+            help_default = _build_help_default(cls, default, toml_dict, cli_overrides, inactive_optional_paths)
             buf = io.StringIO()
             try:
                 with contextlib.redirect_stdout(buf):
                     tyro.cli(
                         tyro.conf.AvoidSubcommands[cls],
                         args=remaining_args,
-                        default=final_default,
+                        default=help_default,
                         prog=prog,
                         description=description,
                     )
@@ -921,22 +1081,90 @@ def cli(
                 _print_union_variant_panels(cls)
                 raise
 
-        result = tyro.cli(
-            tyro.conf.AvoidSubcommands[cls],
+        # 4. Capture remaining CLI overrides via a "sparse mirror" of ``cls``:
+        #    every field becomes Optional with a None / empty default so tyro can
+        #    parse any subset of CLI args without complaining about missing
+        #    required fields. We then scan argv to identify *which* paths the
+        #    user actually typed (so ``--seq-len 0`` is distinct from "unset",
+        #    and ``--name None`` survives even though it ties the mirror's
+        #    default), and read those paths off the mirror result.
+        mirror_cls = _build_mirror_cls(cls)
+        mirror_result = tyro.cli(
+            tyro.conf.AvoidSubcommands[mirror_cls],
             args=remaining_args,
-            default=final_default,
+            default=mirror_cls(),
             prog=prog,
             description=description,
         )
+        valid_paths = _enumerate_cli_paths(mirror_cls)
+        set_paths = _scan_cli_set_paths(remaining_args, valid_paths)
+        if set_paths:
+            cli_overrides = _deep_merge(cli_overrides, _extract_set_paths(mirror_result, set_paths))
 
-        # Reset placeholder Optional[BaseModel] fields back to None on the result.
-        for path in inactive_optional_paths:
-            _set_path_to_none(result, path)
-
-        return result
+        # 5. Build the final merged dict in precedence order:
+        #    caller default ⊂ TOML ⊂ CLI overrides, then validate once. This
+        #    means ``cls``'s validators fire exactly once on the real merged
+        #    data, and ``model_fields_set`` on sub-configs faithfully reflects
+        #    "did the user / TOML actually write this key?" — no leakage from
+        #    earlier default-construction passes.
+        default_dict: dict = {}
+        if default is not None:
+            default_dict = default.model_dump(exclude_unset=True) if isinstance(default, BaseModel) else {}
+        merged = _deep_merge(_deep_merge(default_dict, toml_dict), cli_overrides)
+        return cls.model_validate(merged)
     except ConfigFileError as e:
         # Only print formatted error when running from CLI (sys.argv)
         # When args are explicitly passed, re-raise for programmatic handling
         if use_sys_argv:
             _print_config_error_and_exit(e)
         raise
+
+
+def _build_help_default(cls, caller_default, toml_dict: dict, cli_overrides: dict, inactive_optional_paths: list[str]):
+    """Construct the ``default=`` instance passed to tyro for the ``--help`` pass.
+
+    Help text is rendered against the real ``cls``, so we need a constructible
+    instance. We approximate it by validating the merged TOML + CLI dict
+    against ``cls`` and patching in placeholder instances for Optional[BaseModel]
+    sub-fields the user hasn't activated (so their sub-flags still render in
+    the help panels). Validation failures here are non-fatal — we fall back
+    to ``cls()`` when possible and let tyro surface the real error after.
+    """
+    try:
+        merged = _deep_merge(toml_dict, cli_overrides)
+        if merged:
+            base = cls.model_validate(merged)
+        elif caller_default is not None:
+            base = caller_default
+        else:
+            base = cls.model_validate({})
+    except Exception:
+        try:
+            base = cls.model_validate({})
+        except Exception:
+            return caller_default
+
+    optional_inner_classes = _find_optional_model_inner_classes(cls)
+    for path, inner_cls in optional_inner_classes.items():
+        if _path_is_set_in_config(toml_dict, path) or _path_is_set_in_config(cli_overrides, path):
+            continue
+        if _path_value_on_model(base, path) is not None:
+            continue
+        try:
+            placeholder = inner_cls()
+        except Exception:
+            continue
+        _set_path_on_model(base, path, placeholder)
+        inactive_optional_paths.append(path)
+    return base
+
+
+def _set_path_on_model(obj, path: str, value):
+    """Assign ``value`` to a dotted kebab-case path on a Pydantic model."""
+    parts = [p.replace("-", "_") for p in path.split(".")]
+    target = obj
+    for part in parts[:-1]:
+        target = getattr(target, part, None)
+        if target is None:
+            return
+    setattr(target, parts[-1], value)

@@ -1251,3 +1251,189 @@ def test_dict_coercion_leading_zeros_stay_string():
     config = Config.model_validate({"args": {"code": "007"}})
     assert config.args["code"] == "007"
     assert isinstance(config.args["code"], str)
+
+
+# Tests: TOML + CLI merge happens as a single dict pass, validators fire once,
+# and `model_fields_set` reflects what the user (TOML or CLI) actually wrote.
+# These guard against the regression where `cls.model_validate` was called twice
+# (once to build the tyro default, then again after tyro applied CLI overrides),
+# leaking validator side effects between passes.
+
+
+def test_validators_run_once_when_loading_from_toml(tmp_toml_file, monkeypatch):
+    """A user-defined ``model_validator`` on the top class should fire exactly
+    once over the merged TOML + CLI dict, not once at default-construction time
+    and again after tyro applies overrides."""
+    from typing import Any
+
+    from pydantic import model_validator
+
+    call_log: list[Any] = []
+
+    class Sub(BaseConfig):
+        name: str = "default"
+
+    class Top(BaseConfig):
+        seq_len: int = 0
+        sub: Sub = Sub()
+
+        @model_validator(mode="before")
+        @classmethod
+        def record_invocation(cls, data: Any) -> Any:
+            call_log.append(data)
+            return data
+
+    write_file(tmp_toml_file, 'seq_len = 100\n[sub]\nname = "from_toml"\n')
+
+    monkeypatch.setattr("sys.argv", ["test", "@", tmp_toml_file, "--seq-len", "5"])
+    config = cli(Top)
+
+    assert len(call_log) == 1, f"expected one validator pass, got {len(call_log)}: {call_log}"
+    assert config.seq_len == 5
+    assert config.sub.name == "from_toml"
+
+
+def test_before_validator_input_is_plain_dict_across_argv_combos(tmp_toml_file, monkeypatch):
+    """Whether values came from TOML, CLI, or both, the ``mode='before'``
+    validator on the top class should always receive a plain dict (no
+    pre-constructed sub-model instances leaking in)."""
+    from typing import Any
+
+    from pydantic import model_validator
+
+    seen_inputs: list[Any] = []
+
+    class Sub(BaseConfig):
+        name: str = "default"
+
+    class Top(BaseConfig):
+        seq_len: int = 0
+        sub: Sub = Sub()
+
+        @model_validator(mode="before")
+        @classmethod
+        def record_shape(cls, data: Any) -> Any:
+            seen_inputs.append(data)
+            return data
+
+    write_file(tmp_toml_file, 'seq_len = 100\n[sub]\nname = "from_toml"\n')
+
+    for argv in (
+        [],
+        ["--seq-len", "5", "--sub.name", "from_cli"],
+        ["@", tmp_toml_file],
+        ["@", tmp_toml_file, "--seq-len", "5"],
+    ):
+        seen_inputs.clear()
+        monkeypatch.setattr("sys.argv", ["test", *argv])
+        cli(Top)
+        assert len(seen_inputs) == 1, f"argv={argv!r}: validator fired {len(seen_inputs)} times, expected 1"
+        data = seen_inputs[0]
+        assert isinstance(data, dict), f"argv={argv!r}: expected dict, got {type(data).__name__}"
+        # No sub-model instances inside the dict — sub values should themselves be dicts.
+        for k, v in data.items():
+            assert not isinstance(v, BaseConfig), (
+                f"argv={argv!r}: field {k!r} arrived as a {type(v).__name__} instance, not a dict"
+            )
+
+
+def test_top_level_cli_override_propagates_when_toml_omits_nested(tmp_toml_file, monkeypatch):
+    """The headline #2430 case. A shared top-level value (here ``seq_len``)
+    overridden on the CLI must propagate to the nested sub-config even when the
+    sub-config block appears in TOML but doesn't itself set ``seq_len``."""
+    from pydantic import model_validator
+
+    class TrainerLike(BaseConfig):
+        seq_len: int = 0
+        lr: float = 1e-4
+
+    class RLLike(BaseConfig):
+        seq_len: int = 0
+        trainer: TrainerLike = TrainerLike()
+
+        @model_validator(mode="after")
+        def propagate_seq_len(self):
+            if "seq_len" not in self.trainer.model_fields_set:
+                self.trainer.seq_len = self.seq_len
+            return self
+
+    write_file(tmp_toml_file, "seq_len = 16384\n[trainer]\nlr = 0.0001\n")
+    monkeypatch.setattr("sys.argv", ["test", "@", tmp_toml_file, "--seq-len", "1024"])
+    config = cli(RLLike)
+    assert config.seq_len == 1024
+    assert config.trainer.seq_len == 1024, (
+        f"top-level seq_len=1024 should have propagated to trainer (got {config.trainer.seq_len}). "
+        "If this fails, mode='after' validators relying on model_fields_set are seeing "
+        "stale state from a doubled validation pass."
+    )
+
+
+def test_model_fields_set_reflects_only_user_provided_keys(tmp_toml_file, monkeypatch):
+    """For sub-configs, ``model_fields_set`` should contain only keys the user
+    explicitly wrote in TOML or CLI — not keys filled in by class defaults
+    during default-construction."""
+
+    class Sub(BaseConfig):
+        a: int = 1
+        b: int = 2
+
+    class Top(BaseConfig):
+        sub: Sub = Sub()
+        seq_len: int = 0
+
+    # No nested override at all: sub should look entirely unset.
+    write_file(tmp_toml_file, "seq_len = 5\n")
+    monkeypatch.setattr("sys.argv", ["test", "@", tmp_toml_file])
+    config = cli(Top)
+    assert config.sub.model_fields_set == set(), (
+        f"sub had nothing written, expected empty model_fields_set, got {config.sub.model_fields_set}"
+    )
+
+    # User wrote sub.a only: just 'a' should be in model_fields_set.
+    write_file(tmp_toml_file, "[sub]\na = 9\n")
+    monkeypatch.setattr("sys.argv", ["test", "@", tmp_toml_file])
+    config = cli(Top)
+    assert config.sub.model_fields_set == {"a"}, (
+        f"only 'a' was written, expected {{'a'}}, got {config.sub.model_fields_set}"
+    )
+
+
+def test_cli_override_does_not_mark_unrelated_sibling_fields(monkeypatch):
+    """Overriding ``--sub.a`` on the CLI must not pollute
+    ``sub.model_fields_set`` with sibling keys."""
+
+    class Sub(BaseConfig):
+        a: int = 1
+        b: int = 2
+
+    class Top(BaseConfig):
+        sub: Sub = Sub()
+
+    monkeypatch.setattr("sys.argv", ["test", "--sub.a", "9"])
+    config = cli(Top)
+    assert config.sub.a == 9
+    assert config.sub.model_fields_set == {"a"}, (
+        f"CLI set sub.a=9 only, expected sub.model_fields_set={{'a'}}, got {config.sub.model_fields_set}"
+    )
+
+
+def test_cli_override_of_zero_value_still_propagates(monkeypatch):
+    """``--seq-len 0`` should be distinguishable from "didn't set seq_len".
+    The mirror-based override capture must not lose CLI values that happen to
+    equal a class default or a falsy literal."""
+
+    class Sub(BaseConfig):
+        seq_len: int = 0
+
+    class Top(BaseConfig):
+        seq_len: int = 100
+        sub: Sub = Sub()
+
+    monkeypatch.setattr("sys.argv", ["test", "--seq-len", "0"])
+    config = cli(Top)
+    assert config.seq_len == 0
+    # And the override should be reflected in model_fields_set so downstream
+    # validators can detect "user explicitly wrote 0".
+    assert "seq_len" in config.model_fields_set
+
+
