@@ -32,7 +32,7 @@ import os
 import shutil
 import sys
 import types
-from typing import TypeVar, Union, get_args, get_origin, overload
+from typing import Literal, TypeVar, Union, get_args, get_origin, overload
 
 import tyro
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -459,6 +459,34 @@ def _find_optional_model_inner_classes(cls: type, prefix: str = "") -> dict[str,
     return result
 
 
+def _find_multi_union_variants(cls: type, prefix: str = "") -> dict[str, tuple[list[type], type | None]]:
+    """Map each multi-model-union CLI path (kebab-case) to (all variants, default variant class).
+
+    Used to render help panels for variants that aren't the field's default,
+    so users discover the sub-fields of every variant in ``--help``.
+    """
+    result: dict[str, tuple[list[type], type | None]] = {}
+    if not hasattr(cls, "model_fields"):
+        return result
+    for field_name, field_info in cls.model_fields.items():
+        field_kebab = field_name.replace("_", "-")
+        full_path = f"{prefix}.{field_kebab}" if prefix else field_kebab
+        annotation = field_info.annotation
+        if _is_multi_model_union(annotation):
+            inner = annotation
+            if hasattr(inner, "__metadata__"):
+                inner = get_args(inner)[0]
+            variants = [a for a in get_args(inner) if a is not type(None)]
+            default_cls = type(field_info.default) if isinstance(field_info.default, BaseModel) else None
+            result[full_path] = (variants, default_cls)
+        inner_cls = annotation
+        if hasattr(inner_cls, "__metadata__"):
+            inner_cls = get_args(inner_cls)[0]
+        if isinstance(inner_cls, type) and issubclass(inner_cls, BaseModel):
+            result.update(_find_multi_union_variants(inner_cls, prefix=full_path))
+    return result
+
+
 def _path_is_set_in_config(config: dict, path: str) -> bool:
     """Check whether a dotted kebab-case path resolves to a value in the merged config dict."""
     parts = [p.replace("-", "_") for p in path.split(".")]
@@ -517,6 +545,84 @@ def _annotate_optional_panel_titles(text: str, optional_paths: list[str]) -> str
                 lines[i] = f"{new_title}{'─' * dashes}╮"
             break
     return "\n".join(lines)
+
+
+def _format_type_for_help(annotation) -> str:
+    """Render an annotation as a tyro-style metavar (e.g. INT, STR, {a,b})."""
+    if annotation is None:
+        return ""
+    if hasattr(annotation, "__metadata__"):
+        annotation = get_args(annotation)[0]
+    origin = get_origin(annotation)
+    if origin is Literal:
+        return "{" + ",".join(str(c) for c in get_args(annotation)) + "}"
+    primitive_names = {int: "INT", float: "FLOAT", str: "STR", bool: "{True,False}"}
+    if annotation in primitive_names:
+        return primitive_names[annotation]
+    if origin is list:
+        args = get_args(annotation)
+        inner = args[0] if args else None
+        return f"[{_format_type_for_help(inner)} [...]]"
+    if origin is Union or origin is getattr(types, "UnionType", None):
+        non_none = [a for a in get_args(annotation) if a is not type(None)]
+        if len(non_none) == 1:
+            return f"{_format_type_for_help(non_none[0])}|None"
+        return "|".join(_format_type_for_help(a) for a in non_none)
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return ""
+    return getattr(annotation, "__name__", str(annotation)).upper()
+
+
+def _render_variant_panel(path: str, variant_cls: type, term_width: int) -> list[str]:
+    """Render a tyro-style help panel listing a union variant's fields."""
+    rows: list[tuple[str, str]] = []
+    for fname, finfo in variant_cls.model_fields.items():
+        type_str = _format_type_for_help(finfo.annotation)
+        flag = f"--{path}.{fname.replace('_', '-')}"
+        if type_str:
+            flag = f"{flag} {type_str}"
+        default = finfo.default
+        if isinstance(default, BaseModel):
+            note = ""
+        elif default is None:
+            note = "(default: None)"
+        elif repr(default) == "PydanticUndefined":
+            note = ""
+        else:
+            note = f"(default: {default})"
+        rows.append((flag, note))
+
+    if not rows:
+        return []
+
+    flag_w = max(len(f) for f, _ in rows)
+    body_lines = [f"{f:<{flag_w}}  {n}".rstrip() for f, n in rows]
+    title = f"{path} variant: {variant_cls.__name__}"
+    inner = max(max(len(line) for line in body_lines), len(title) + 2)
+    box_total = min(max(inner + 4, len(title) + 6), max(40, term_width))
+    inner = box_total - 4
+
+    horiz = "─" * max(1, box_total - len(title) - 5)
+    lines = [f"╭─ {title} {horiz}╮"]
+    for line in body_lines:
+        truncated = line if len(line) <= inner else line[: inner - 1] + "…"
+        lines.append(f"│ {truncated:<{inner}} │")
+    lines.append(f"╰{'─' * (box_total - 2)}╯")
+    return lines
+
+
+def _print_union_variant_panels(cls: type) -> None:
+    """Print help panels for every non-default variant of multi-model union fields."""
+    variants_map = _find_multi_union_variants(cls)
+    if not variants_map:
+        return
+    term_width = min(80, max(40, shutil.get_terminal_size().columns))
+    for path, (variants, default_cls) in variants_map.items():
+        for variant_cls in variants:
+            if variant_cls is default_cls:
+                continue
+            for line in _render_variant_panel(path, variant_cls, term_width):
+                print(line)
 
 
 _JSON_VALUE_TYPES = (dict, list)
@@ -799,7 +905,7 @@ def cli(
         # tyro errors on dict[str, Any] fields in non-default union variants
         # and keeps CLI usage simple — variant selection belongs in config files.
         wants_help = "--help" in remaining_args or "-h" in remaining_args
-        if wants_help and inactive_optional_paths:
+        if wants_help:
             buf = io.StringIO()
             try:
                 with contextlib.redirect_stdout(buf):
@@ -812,6 +918,7 @@ def cli(
                     )
             except SystemExit:
                 sys.stdout.write(_annotate_optional_panel_titles(buf.getvalue(), inactive_optional_paths))
+                _print_union_variant_panels(cls)
                 raise
 
         result = tyro.cli(

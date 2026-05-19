@@ -428,6 +428,57 @@ def test_cli_discriminated_union_switch_variant_via_cli():
     assert config.name == "world"
 
 
+def test_multi_union_help_shows_all_variants(capsys):
+    """--help should list sub-fields for every variant of a multi-model union field."""
+    from typing import Annotated, Literal
+    from pydantic import Field
+
+    class ConfigA(BaseConfig):
+        type: Literal["a"] = "a"
+        value: int = 1
+        extra_a: str = "hello"
+
+    class ConfigB(BaseConfig):
+        type: Literal["b"] = "b"
+        value: float = 2.0
+        extra_b: bool = True
+
+    class Config(BaseConfig):
+        data: Annotated[ConfigA | ConfigB, Field(discriminator="type")] = ConfigA()
+        seed: int = 42
+
+    with pytest.raises(SystemExit):
+        cli(Config, args=["--help"])
+    out = capsys.readouterr().out
+    assert "--data.value INT" in out
+    assert "--data.extra-a STR" in out
+    assert "data variant: ConfigB" in out
+    assert "--data.extra-b" in out
+
+
+def test_multi_union_plain_help_shows_all_variants(capsys):
+    """--help should also list variants for a plain ``A | B`` union (no discriminator)."""
+
+    class ConfigA(BaseConfig):
+        value: int = 1
+        extra_a: str = "hello"
+
+    class ConfigB(BaseConfig):
+        value: float = 2.0
+        extra_b: bool = True
+
+    class Config(BaseConfig):
+        data: ConfigA | ConfigB = ConfigA()
+        seed: int = 42
+
+    with pytest.raises(SystemExit):
+        cli(Config, args=["--help"])
+    out = capsys.readouterr().out
+    assert "--data.value INT" in out
+    assert "data variant: ConfigB" in out
+    assert "--data.extra-b" in out
+
+
 # Tests: BaseConfig validators
 
 
