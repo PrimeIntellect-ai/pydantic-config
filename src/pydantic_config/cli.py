@@ -651,6 +651,100 @@ def _print_union_variant_panels(cls: type) -> None:
                 print(line)
 
 
+def _strip_annotated(annotation):
+    """Unwrap ``Annotated[T, ...]`` → ``T``."""
+    if hasattr(annotation, "__metadata__"):
+        return get_args(annotation)[0]
+    return annotation
+
+
+def _collect_help_panels(
+    cls: type, term_width: int, prefix: str = ""
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """Walk ``cls.model_fields`` to collect help rows and sub-panel lines.
+
+    Returns ``(rows, panel_lines)`` where ``rows`` is the list of leaf
+    ``(flag, default_annotation)`` pairs to emit in the *current* panel and
+    ``panel_lines`` is a flat list of lines (panels separated by blank lines)
+    for every sub-config / Optional[BaseModel] / multi-model union field
+    discovered below this point.
+    """
+    rows: list[tuple[str, str]] = []
+    panel_lines: list[str] = []
+
+    for fname, finfo in cls.model_fields.items():
+        kebab = fname.replace("_", "-")
+        full_path = f"{prefix}.{kebab}" if prefix else kebab
+        annotation = finfo.annotation
+
+        if _is_multi_model_union(annotation):
+            inner = _strip_annotated(annotation)
+            variants = [a for a in get_args(inner) if a is not type(None)]
+            for variant_cls in variants:
+                panel_lines.extend(_render_variant_panel(full_path, variant_cls, term_width))
+                panel_lines.append("")
+            continue
+
+        if _is_optional_model(annotation):
+            inner = _strip_annotated(annotation)
+            non_none = [a for a in get_args(inner) if a is not type(None)]
+            inner_cls = non_none[0]
+            sub_rows, sub_panels = _collect_help_panels(inner_cls, term_width, prefix=full_path)
+            panel_lines.extend(
+                _render_panel(f"{full_path} options (optional, default: None)", sub_rows, term_width)
+            )
+            panel_lines.append("")
+            panel_lines.extend(sub_panels)
+            continue
+
+        inner = _strip_annotated(annotation)
+        if isinstance(inner, type) and issubclass(inner, BaseModel):
+            sub_rows, sub_panels = _collect_help_panels(inner, term_width, prefix=full_path)
+            panel_lines.extend(_render_panel(f"{full_path} options", sub_rows, term_width))
+            panel_lines.append("")
+            panel_lines.extend(sub_panels)
+            continue
+
+        # Leaf field.
+        type_str = _format_type_for_help(annotation)
+        flag = f"--{full_path}"
+        if type_str:
+            flag = f"{flag} {type_str}"
+        rows.append((flag, _format_default_for_help(finfo.default)))
+
+    return rows, panel_lines
+
+
+def _render_help(cls: type, prog: str | None = None, description: str | None = None) -> str:
+    """Render the full ``--help`` text for ``cls`` as a single string.
+
+    Layout: a usage line, optional description, an "options" panel listing
+    leaf fields directly on ``cls``, then a separate panel per sub-config
+    (recursively flattened with dotted paths), per Optional[BaseModel] field
+    (annotated "(optional, default: None)"), and per multi-model union
+    variant. Reuses ``_render_panel`` so all panels share the same
+    box-drawing style.
+    """
+    prog = prog or os.path.basename(sys.argv[0])
+    term_width = min(80, max(40, shutil.get_terminal_size().columns))
+
+    root_rows, sub_panels = _collect_help_panels(cls, term_width)
+
+    lines: list[str] = [f"usage: {prog} [-h] [@ FILE] [OPTIONS]"]
+    if description:
+        lines.append("")
+        for paragraph in description.splitlines():
+            lines.append(paragraph)
+    lines.append("")
+
+    header_rows = [("-h, --help", "show this help message and exit"), *root_rows]
+    lines.extend(_render_panel("options", header_rows, term_width))
+    lines.append("")
+    lines.extend(sub_panels)
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
 _JSON_VALUE_TYPES = (dict, list)
 
 

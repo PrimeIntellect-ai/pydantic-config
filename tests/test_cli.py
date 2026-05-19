@@ -1372,3 +1372,57 @@ def test_cli_validation_alias_accepts_alias_name():
     # Canonical name works.
     config = cli(Outer, args=["--inner.value", "5"])
     assert config.inner.value == 5
+
+
+def test_render_help_returns_string_with_panels():
+    """``_render_help`` should produce a usage line + an "options" panel for
+    root scalars + a separate panel per sub-config + variant panels for
+    multi-model unions + an "(optional, default: None)" panel per
+    Optional[BaseModel]."""
+    from typing import Literal, Union
+    from pydantic_config.cli import _render_help
+
+    class WandbConfig(BaseConfig):
+        project: str = "default-proj"
+        entity: str | None = None
+
+    class TrainerConfig(BaseConfig):
+        lr: float = 1e-4
+        batch_size: int = 32
+
+    class VariantA(BaseConfig):
+        type: Literal["a"] = "a"
+        value: int = 1
+
+    class VariantB(BaseConfig):
+        type: Literal["b"] = "b"
+        extra_b: str = "bee"
+
+    class Top(BaseConfig):
+        seed: int = 42
+        trainer: TrainerConfig = TrainerConfig()
+        wandb: WandbConfig | None = None
+        data: Annotated[Union[VariantA, VariantB], Field(discriminator="type")] = VariantA()
+
+    out = _render_help(Top, prog="demo", description="A demo program.")
+
+    # Structural fixtures
+    assert out.startswith("usage: demo [-h]")
+    assert "A demo program." in out
+    assert "-h, --help" in out
+    # Root scalar in main panel
+    assert "--seed" in out
+    assert "(default: 42)" in out
+    # Plain sub-config panel
+    assert "trainer options" in out
+    assert "--trainer.lr" in out
+    assert "--trainer.batch-size" in out
+    # Optional[BaseModel] panel
+    assert "wandb options (optional, default: None)" in out
+    assert "--wandb.project" in out
+    assert "--wandb.entity" in out
+    # Multi-model union variant panels
+    assert "data variant: VariantA" in out
+    assert "data variant: VariantB" in out
+    assert "--data.value" in out
+    assert "--data.extra-b" in out
