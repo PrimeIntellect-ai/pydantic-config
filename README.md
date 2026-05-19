@@ -133,6 +133,17 @@ python examples/train.py --run-name r1 --optimizer.type muon --optimizer.lr 2e-3
 python examples/train.py --run-name r1 --optimizer @ examples/optimizer.toml       # load a variant from a file
 ```
 
+### Disabling an optional sub-config
+
+An optional sub-config that's been enabled (by a file or defaults) can be
+turned off again with `--no-<name>` or by passing the literal `None`.
+In TOML, write `wandb = "None"` (the string `"None"` is coerced to null).
+
+```bash
+python examples/train.py --run-name r1 --wandb @ examples/wandb.toml --no-wandb    # file + disable
+python examples/train.py --run-name r1 --wandb None                                 # explicit None
+```
+
 ### Validation aliases
 
 `Field(validation_alias=AliasChoices("seed", "random_seed"))` makes both names

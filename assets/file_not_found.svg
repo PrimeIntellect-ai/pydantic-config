@@ -1,4 +1,4 @@
-<svg class="rich-terminal" viewBox="0 0 1019 123.19999999999999" xmlns="http://www.w3.org/2000/svg">
+<svg class="rich-terminal" viewBox="0 0 1360 123.19999999999999" xmlns="http://www.w3.org/2000/svg">
     <!-- Generated with Rich https://www.textualize.io -->
     <style>
 
@@ -19,49 +19,49 @@
         font-weight: 700;
     }
 
-    .terminal-1105390143-matrix {
+    .terminal-946955190-matrix {
         font-family: Fira Code, monospace;
         font-size: 20px;
         line-height: 24.4px;
         font-variant-east-asian: full-width;
     }
 
-    .terminal-1105390143-title {
+    .terminal-946955190-title {
         font-size: 18px;
         font-weight: bold;
         font-family: arial;
     }
 
-    .terminal-1105390143-r1 { fill: #cc555a }
-.terminal-1105390143-r2 { fill: #c5c8c6 }
-.terminal-1105390143-r3 { fill: #cc555a;font-weight: bold }
+    .terminal-946955190-r1 { fill: #cc555a }
+.terminal-946955190-r2 { fill: #c5c8c6 }
+.terminal-946955190-r3 { fill: #cc555a;font-weight: bold }
     </style>
 
     <defs>
-    <clipPath id="terminal-1105390143-clip-terminal">
-      <rect x="0" y="0" width="999.4" height="72.19999999999999" />
+    <clipPath id="terminal-946955190-clip-terminal">
+      <rect x="0" y="0" width="1341.0" height="72.19999999999999" />
     </clipPath>
-    <clipPath id="terminal-1105390143-line-0">
-    <rect x="0" y="1.5" width="1000.4" height="24.65"/>
+    <clipPath id="terminal-946955190-line-0">
+    <rect x="0" y="1.5" width="1342" height="24.65"/>
             </clipPath>
-<clipPath id="terminal-1105390143-line-1">
-    <rect x="0" y="25.9" width="1000.4" height="24.65"/>
+<clipPath id="terminal-946955190-line-1">
+    <rect x="0" y="25.9" width="1342" height="24.65"/>
             </clipPath>
     </defs>
 
-    <rect fill="#292929" stroke="rgba(255,255,255,0.35)" stroke-width="1" x="1" y="1" width="1017" height="121.2" rx="8"/><text class="terminal-1105390143-title" fill="#c5c8c6" text-anchor="middle" x="508" y="27">Config&#160;File&#160;Not&#160;Found</text>
+    <rect fill="#292929" stroke="rgba(255,255,255,0.35)" stroke-width="1" x="1" y="1" width="1358" height="121.2" rx="8"/><text class="terminal-946955190-title" fill="#c5c8c6" text-anchor="middle" x="679" y="27">Config&#160;File&#160;Not&#160;Found</text>
             <g transform="translate(26,22)">
             <circle cx="0" cy="0" r="7" fill="#ff5f57"/>
             <circle cx="22" cy="0" r="7" fill="#febc2e"/>
             <circle cx="44" cy="0" r="7" fill="#28c840"/>
             </g>
         
-    <g transform="translate(9, 41)" clip-path="url(#terminal-1105390143-clip-terminal)">
+    <g transform="translate(9, 41)" clip-path="url(#terminal-946955190-clip-terminal)">
     
-    <g class="terminal-1105390143-matrix">
-    <text class="terminal-1105390143-r1" x="0" y="20" textLength="12.2" clip-path="url(#terminal-1105390143-line-0)">╭</text><text class="terminal-1105390143-r2" x="12.2" y="20" textLength="24.4" clip-path="url(#terminal-1105390143-line-0)">─&#160;</text><text class="terminal-1105390143-r3" x="36.6" y="20" textLength="207.4" clip-path="url(#terminal-1105390143-line-0)">Config&#160;file&#160;error</text><text class="terminal-1105390143-r1" x="256.2" y="20" textLength="719.8" clip-path="url(#terminal-1105390143-line-0)">──────────────────────────────────────────────────────────╮</text><text class="terminal-1105390143-r2" x="1000.4" y="20" textLength="12.2" clip-path="url(#terminal-1105390143-line-0)">
-</text><text class="terminal-1105390143-r1" x="0" y="44.4" textLength="12.2" clip-path="url(#terminal-1105390143-line-1)">│</text><text class="terminal-1105390143-r2" x="12.2" y="44.4" textLength="951.6" clip-path="url(#terminal-1105390143-line-1)">&#160;Config&#160;file&#160;not&#160;found:&#160;nonexistent.toml&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;</text><text class="terminal-1105390143-r1" x="963.8" y="44.4" textLength="12.2" clip-path="url(#terminal-1105390143-line-1)">│</text><text class="terminal-1105390143-r2" x="1000.4" y="44.4" textLength="12.2" clip-path="url(#terminal-1105390143-line-1)">
-</text><text class="terminal-1105390143-r1" x="0" y="68.8" textLength="976" clip-path="url(#terminal-1105390143-line-2)">╰──────────────────────────────────────────────────────────────────────────────╯</text><text class="terminal-1105390143-r2" x="1000.4" y="68.8" textLength="12.2" clip-path="url(#terminal-1105390143-line-2)">
+    <g class="terminal-946955190-matrix">
+    <text class="terminal-946955190-r1" x="0" y="20" textLength="12.2" clip-path="url(#terminal-946955190-line-0)">╭</text><text class="terminal-946955190-r2" x="12.2" y="20" textLength="24.4" clip-path="url(#terminal-946955190-line-0)">─&#160;</text><text class="terminal-946955190-r3" x="36.6" y="20" textLength="207.4" clip-path="url(#terminal-946955190-line-0)">Config&#160;file&#160;error</text><text class="terminal-946955190-r1" x="256.2" y="20" textLength="1085.8" clip-path="url(#terminal-946955190-line-0)">────────────────────────────────────────────────────────────────────────────────────────╮</text><text class="terminal-946955190-r2" x="1342" y="20" textLength="12.2" clip-path="url(#terminal-946955190-line-0)">
+</text><text class="terminal-946955190-r1" x="0" y="44.4" textLength="12.2" clip-path="url(#terminal-946955190-line-1)">│</text><text class="terminal-946955190-r2" x="12.2" y="44.4" textLength="1317.6" clip-path="url(#terminal-946955190-line-1)">&#160;Config&#160;file&#160;not&#160;found:&#160;nonexistent.toml&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;</text><text class="terminal-946955190-r1" x="1329.8" y="44.4" textLength="12.2" clip-path="url(#terminal-946955190-line-1)">│</text><text class="terminal-946955190-r2" x="1342" y="44.4" textLength="12.2" clip-path="url(#terminal-946955190-line-1)">
+</text><text class="terminal-946955190-r1" x="0" y="68.8" textLength="1342" clip-path="url(#terminal-946955190-line-2)">╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text><text class="terminal-946955190-r2" x="1342" y="68.8" textLength="12.2" clip-path="url(#terminal-946955190-line-2)">
 </text>
     </g>
     </g>

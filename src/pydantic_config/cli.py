@@ -132,6 +132,18 @@ _DIM = "\033[2m"
 _BRIGHT_RED = "\033[91m"
 
 
+def _resolve_bool_option(explicit: bool | None, env_var: str, default: bool) -> bool:
+    """Resolve a boolean option: explicit arg > env var > default."""
+    if explicit is not None:
+        return explicit
+    env_val = os.environ.get(env_var, "").lower()
+    if env_val in ("1", "true", "yes"):
+        return True
+    if env_val in ("0", "false", "no"):
+        return False
+    return default
+
+
 def _supports_color() -> bool:
     """Check if the terminal supports ANSI colors."""
     if os.environ.get("NO_COLOR"):
@@ -175,19 +187,30 @@ class ConfigFileError(Exception):
         self.message = message
 
 
-def _term_width() -> int:
-    """Width to render boxes at — the actual terminal width, with a floor of 40.
+def _term_width(wide: bool = True) -> int:
+    """Width to render boxes at.
 
-    No upper cap: by default the error / help panels render full-screen so the
-    box draws look like a coherent UI element rather than an 80-column island
-    in a wide terminal.
+    ``wide=True`` (default): full terminal width (floor 40).
+    ``wide=False``: capped at 80 columns.
     """
-    return max(40, shutil.get_terminal_size().columns)
+    cols = shutil.get_terminal_size().columns
+    if wide:
+        return max(40, cols)
+    return min(80, max(40, cols))
 
 
-def _print_config_error_and_exit(error: ConfigFileError) -> None:
+def _print_config_error_and_exit(
+    error: ConfigFileError, *, plain: bool = False, wide: bool = True
+) -> None:
     """Print a config file error in a nice box format and exit."""
-    width = _term_width()
+    use_color = not plain and _supports_color()
+
+    def colorize(text: str, *codes: str) -> str:
+        if not use_color:
+            return text
+        return "".join(codes) + text + _RESET
+
+    width = _term_width(wide)
     inner_width = width - 4  # Account for "│ " and " │"
 
     # Box drawing characters
@@ -220,7 +243,7 @@ def _print_config_error_and_exit(error: ConfigFileError) -> None:
         border drift left.
         """
         padding = inner_width - _visible_len(content)
-        return f"{_colorize(vert, _RED)} {content}{' ' * padding} {_colorize(vert, _RED)}"
+        return f"{colorize(vert, _RED)} {content}{' ' * padding} {colorize(vert, _RED)}"
 
     # Build the error message content
     lines = []
@@ -229,9 +252,9 @@ def _print_config_error_and_exit(error: ConfigFileError) -> None:
     title = "Config file error"
     title_plain_len = 2 + len(title) + 1
     lines.append(
-        _colorize(top_left, _RED)
-        + f"{horiz} {_colorize(title, _RED, _BOLD)} "
-        + _colorize(horiz * (width - title_plain_len - 2) + top_right, _RED)
+        colorize(top_left, _RED)
+        + f"{horiz} {colorize(title, _RED, _BOLD)} "
+        + colorize(horiz * (width - title_plain_len - 2) + top_right, _RED)
     )
 
     # Content
@@ -244,7 +267,7 @@ def _print_config_error_and_exit(error: ConfigFileError) -> None:
                 lines.append(box_line(line))
 
             # Horizontal rule
-            lines.append(box_line(_colorize(horiz * inner_width, _RED)))
+            lines.append(box_line(colorize(horiz * inner_width, _RED)))
 
             # Pydantic error details
             pydantic_lines = parts[1].split("\n")
@@ -254,15 +277,15 @@ def _print_config_error_and_exit(error: ConfigFileError) -> None:
                 # First line (validation error count)
                 if "validation error" in pydantic_line:
                     for wrapped in wrap_text(pydantic_line, inner_width):
-                        lines.append(box_line(_colorize(wrapped, _BRIGHT_RED)))
+                        lines.append(box_line(colorize(wrapped, _BRIGHT_RED)))
                 # Field name (not indented)
                 elif pydantic_line and not pydantic_line.startswith(" "):
                     for wrapped in wrap_text(f"  {pydantic_line}", inner_width):
-                        lines.append(box_line(_colorize(wrapped, _BOLD)))
+                        lines.append(box_line(colorize(wrapped, _BOLD)))
                 # Error details (indented)
                 elif pydantic_line.startswith("  "):
                     for wrapped in wrap_text(f"    {pydantic_line.strip()}", inner_width):
-                        lines.append(box_line(_colorize(wrapped, _DIM)))
+                        lines.append(box_line(colorize(wrapped, _DIM)))
         else:
             for line in wrap_text(message, inner_width):
                 lines.append(box_line(line))
@@ -271,7 +294,7 @@ def _print_config_error_and_exit(error: ConfigFileError) -> None:
             lines.append(box_line(line))
 
     # Bottom border
-    lines.append(_colorize(f"{bot_left}{horiz * (width - 2)}{bot_right}", _RED))
+    lines.append(colorize(f"{bot_left}{horiz * (width - 2)}{bot_right}", _RED))
 
     # Print to stderr
     for line in lines:
@@ -435,9 +458,9 @@ def _process_args(args: list[str]) -> tuple[list[str], dict, dict[str, dict]]:
     return remaining_args, root_config, nested_configs
 
 
-def _nest_config(key_path: str, config: dict) -> dict:
+def _nest_config(key_path: str, config: Any) -> dict:
     """
-    Nest a config dict under a dotted key path.
+    Nest a value under a dotted key path.
 
     Example:
         _nest_config("model.encoder", {"layers": 6})
@@ -698,7 +721,9 @@ def _collect_help_panels(
     return rows, panel_lines
 
 
-def _render_help(cls: type, prog: str | None = None, description: str | None = None) -> str:
+def _render_help(
+    cls: type, prog: str | None = None, description: str | None = None, wide: bool = True
+) -> str:
     """Render the full ``--help`` text for ``cls`` as a single string.
 
     Layout: a usage line, optional description, an "options" panel listing
@@ -709,7 +734,7 @@ def _render_help(cls: type, prog: str | None = None, description: str | None = N
     box-drawing style.
     """
     prog = prog or os.path.basename(sys.argv[0])
-    term_width = _term_width()
+    term_width = _term_width(wide)
 
     root_rows, sub_panels = _collect_help_panels(cls, term_width)
 
@@ -811,14 +836,13 @@ def _match_optional_prefix(path: str, optional_paths: set[str]) -> str | None:
 def _expand_bare_optional_flags(
     args: list[str], optional_paths: set[str]
 ) -> tuple[list[str], dict]:
-    """Handle CLI args for Optional[BaseModel] fields that tyro cannot parse.
+    """Handle CLI args for Optional[BaseModel] fields.
 
-    Handles two patterns:
-    1. Bare flags: ``--compile`` enables CompileConfig with defaults.
-    2. Sub-field overrides: ``--wandb.project foo`` sets a sub-field on an
-       Optional model that defaults to None.  The arg and value are removed
-       from the CLI args and injected into the config dict so pydantic
-       handles type coercion.
+    Patterns:
+    1. ``--wandb`` (bare flag) — enable with defaults.
+    2. ``--wandb None`` — disable (set to None).
+    3. ``--no-wandb`` — disable (set to None).
+    4. ``--wandb.project foo`` — enable + sub-field override.
 
     Returns (remaining_args, config_overrides_as_nested_dict).
     """
@@ -831,10 +855,26 @@ def _expand_bare_optional_flags(
         if arg.startswith("--"):
             path = arg[2:]
 
-            # Pattern 1: bare flag (e.g. --compile)
+            # Pattern 3: --no-<optional> negation (e.g. --no-wandb)
+            if path.startswith("no-") and path[3:] in optional_paths:
+                snake_path = path[3:].replace("-", "_")
+                nested = _nest_config(snake_path, "None")
+                overrides = _deep_merge(overrides, nested)
+                i += 1
+                continue
+
+            # Pattern 1 / 2: bare flag or explicit "None"
             if path in optional_paths:
                 next_is_value = i + 1 < len(args) and not args[i + 1].startswith("-") and not args[i + 1].startswith("@")
+                if next_is_value and args[i + 1] == "None":
+                    # Pattern 2: --wandb None → disable
+                    snake_path = path.replace("-", "_")
+                    nested = _nest_config(snake_path, "None")
+                    overrides = _deep_merge(overrides, nested)
+                    i += 2
+                    continue
                 if not next_is_value:
+                    # Pattern 1: bare flag → enable with defaults
                     snake_path = path.replace("-", "_")
                     nested = _nest_config(snake_path, {})
                     overrides = _deep_merge(overrides, nested)
@@ -1193,6 +1233,8 @@ def cli(
     default: T | None = None,
     prog: str | None = None,
     description: str | None = None,
+    plain: bool | None = None,
+    wide: bool | None = None,
 ) -> T:
     """
     Parse CLI arguments into a typed config object, with support for config files.
@@ -1209,6 +1251,10 @@ def cli(
         default: Default instance to use for missing values
         prog: Program name for help text
         description: Description for help text
+        plain: Disable colored output. Falls back to env var
+            ``PYDANTIC_CONFIG_PLAIN`` (default: False).
+        wide: Use full terminal width for help and error panels. Falls back
+            to env var ``PYDANTIC_CONFIG_WIDE`` (default: True).
 
     Returns:
         Parsed and validated config object
@@ -1231,6 +1277,19 @@ def cli(
     use_sys_argv = args is None
     if args is None:
         args = sys.argv[1:]
+
+    # Strip reserved CLI-level flags (--plain / --no-wide) before parsing the
+    # user's config model. These override the env var / default but are
+    # themselves overridden by an explicit ``cli(..., plain=True)`` call.
+    if plain is None and "--plain" in args:
+        args = [a for a in args if a != "--plain"]
+        plain = True
+    if wide is None and "--no-wide" in args:
+        args = [a for a in args if a != "--no-wide"]
+        wide = False
+
+    plain_resolved = _resolve_bool_option(plain, "PYDANTIC_CONFIG_PLAIN", False)
+    wide_resolved = _resolve_bool_option(wide, "PYDANTIC_CONFIG_WIDE", True)
 
     try:
         # 1. Parse ``@ file.toml`` references into a raw TOML/JSON/YAML dict.
@@ -1257,7 +1316,7 @@ def cli(
 
         # 3. --help is rendered from ``cls.model_fields``, no tyro round-trip.
         if "--help" in remaining_args or "-h" in remaining_args:
-            sys.stdout.write(_render_help(cls, prog=prog, description=description))
+            sys.stdout.write(_render_help(cls, prog=prog, description=description, wide=wide_resolved))
             sys.exit(0)
 
         # 4. Parse remaining ``--flag value`` / ``--flag=value`` tokens against the
@@ -1294,5 +1353,5 @@ def cli(
         # Only print formatted error when running from CLI (sys.argv);
         # when args are explicitly passed, re-raise for programmatic handling.
         if use_sys_argv:
-            _print_config_error_and_exit(e)
+            _print_config_error_and_exit(e, plain=plain_resolved, wide=wide_resolved)
         raise

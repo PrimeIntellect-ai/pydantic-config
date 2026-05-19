@@ -7,6 +7,9 @@ from rich.console import Console
 from rich.text import Text
 
 
+TERM_COLUMNS = 110
+
+
 def capture_with_colors(cmd: list[str]) -> str:
     """Capture command output with ANSI colors.
 
@@ -17,6 +20,7 @@ def capture_with_colors(cmd: list[str]) -> str:
     env = os.environ.copy()
     env["TERM"] = "xterm-256color"
     env["FORCE_COLOR"] = "1"
+    env["COLUMNS"] = str(TERM_COLUMNS)
     env.pop("NO_COLOR", None)
 
     result = subprocess.run(cmd, capture_output=True, text=True, env=env)
@@ -78,21 +82,21 @@ if __name__ == "__main__":
     # Help output
     output = capture_with_colors(["uv", "run", "python", "examples/train.py", "--help"])
     help_text = extract_help(output)
-    ansi_to_svg(help_text, "pydantic-config --help", "assets/help.svg", width=82)
+    ansi_to_svg(help_text, "pydantic-config --help", "assets/help.svg", width=TERM_COLUMNS)
 
     # Required error
     output = capture_with_colors(["uv", "run", "python", "examples/train.py"])
     box_text = extract_box(output)
-    ansi_to_svg(box_text, "Missing Required Argument", "assets/required_error.svg", width=60)
+    ansi_to_svg(box_text, "Missing Required Argument", "assets/required_error.svg", width=TERM_COLUMNS)
 
     # Config validation error
     output = capture_with_colors(
         ["uv", "run", "python", "examples/train.py", "--run-name", "r1", "--seed", "nope"]
     )
     box_text = extract_box(output)
-    ansi_to_svg(box_text, "Config Validation Error", "assets/config_error.svg", width=82)
+    ansi_to_svg(box_text, "Config Validation Error", "assets/config_error.svg", width=TERM_COLUMNS)
 
     # File not found
     output = capture_with_colors(["uv", "run", "python", "examples/train.py", "@", "nonexistent.toml"])
     box_text = extract_box(output)
-    ansi_to_svg(box_text, "Config File Not Found", "assets/file_not_found.svg", width=82)
+    ansi_to_svg(box_text, "Config File Not Found", "assets/file_not_found.svg", width=TERM_COLUMNS)
