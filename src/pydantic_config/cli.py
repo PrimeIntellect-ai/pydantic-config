@@ -432,33 +432,6 @@ def _find_optional_model_paths(cls: type, prefix: str = "") -> set[str]:
     return paths
 
 
-def _find_optional_model_inner_classes(cls: type, prefix: str = "") -> dict[str, type]:
-    """Map each Optional[BaseModel] CLI path (kebab-case) to its inner BaseModel class.
-
-    Used to fabricate a default instance so tyro renders sub-fields in ``--help``
-    for fields that would otherwise default to None.
-    """
-    result: dict[str, type] = {}
-    if not hasattr(cls, "model_fields"):
-        return result
-    for field_name, field_info in cls.model_fields.items():
-        field_kebab = field_name.replace("_", "-")
-        full_path = f"{prefix}.{field_kebab}" if prefix else field_kebab
-        annotation = field_info.annotation
-        if _is_optional_model(annotation):
-            inner = annotation
-            if hasattr(inner, "__metadata__"):
-                inner = get_args(inner)[0]
-            non_none = [a for a in get_args(inner) if a is not type(None)]
-            result[full_path] = non_none[0]
-        inner = annotation
-        if hasattr(inner, "__metadata__"):
-            inner = get_args(inner)[0]
-        if isinstance(inner, type) and issubclass(inner, BaseModel):
-            result.update(_find_optional_model_inner_classes(inner, prefix=full_path))
-    return result
-
-
 def _find_multi_union_variants(cls: type, prefix: str = "") -> dict[str, tuple[list[type], type | None]]:
     """Map each multi-model-union CLI path (kebab-case) to (all variants, default variant class).
 
@@ -485,66 +458,6 @@ def _find_multi_union_variants(cls: type, prefix: str = "") -> dict[str, tuple[l
         if isinstance(inner_cls, type) and issubclass(inner_cls, BaseModel):
             result.update(_find_multi_union_variants(inner_cls, prefix=full_path))
     return result
-
-
-def _path_is_set_in_config(config: dict, path: str) -> bool:
-    """Check whether a dotted kebab-case path resolves to a value in the merged config dict."""
-    parts = [p.replace("-", "_") for p in path.split(".")]
-    cur = config
-    for part in parts:
-        if not isinstance(cur, dict) or part not in cur:
-            return False
-        cur = cur[part]
-    return cur is not None
-
-
-def _path_value_on_model(obj, path: str):
-    """Walk a dotted kebab-case path on a Pydantic model, returning the value or None if missing."""
-    parts = [p.replace("-", "_") for p in path.split(".")]
-    cur = obj
-    for part in parts:
-        if cur is None or not isinstance(cur, BaseModel):
-            return None
-        cur = getattr(cur, part, None)
-    return cur
-
-
-def _set_path_to_none(obj: BaseModel, path: str) -> None:
-    """Set the field at a dotted kebab-case path to None on a Pydantic model."""
-    parts = [p.replace("-", "_") for p in path.split(".")]
-    target = obj
-    for part in parts[:-1]:
-        target = getattr(target, part, None)
-        if target is None:
-            return
-    setattr(target, parts[-1], None)
-
-
-def _annotate_optional_panel_titles(text: str, optional_paths: list[str]) -> str:
-    """Inject "(optional, default: None)" into tyro panel titles for the given paths.
-
-    Tyro renders ``╭─ wandb options ───╮`` for each top-level group; this rewrites
-    those titles so the help itself communicates which fields default to None.
-    The line width is preserved by trimming the trailing dashes.
-    """
-    if not optional_paths:
-        return text
-    marker = "(optional, default: None)"
-    lines = text.split("\n")
-    for path in optional_paths:
-        prefix = f"╭─ {path} options "
-        for i, line in enumerate(lines):
-            if not line.startswith(prefix) or not line.endswith("╮"):
-                continue
-            original_width = len(line)
-            new_title = f"{prefix}{marker} "
-            dashes = original_width - len(new_title) - 1
-            if dashes < 1:
-                lines[i] = f"{new_title}─╮"
-            else:
-                lines[i] = f"{new_title}{'─' * dashes}╮"
-            break
-    return "\n".join(lines)
 
 
 def _format_type_for_help(annotation) -> str:
@@ -635,20 +548,6 @@ def _render_variant_panel(path: str, variant_cls: type, term_width: int) -> list
             flag = f"{flag} {type_str}"
         rows.append((flag, _format_default_for_help(finfo.default)))
     return _render_panel(f"{path} variant: {variant_cls.__name__}", rows, term_width)
-
-
-def _print_union_variant_panels(cls: type) -> None:
-    """Print help panels for every non-default variant of multi-model union fields."""
-    variants_map = _find_multi_union_variants(cls)
-    if not variants_map:
-        return
-    term_width = min(80, max(40, shutil.get_terminal_size().columns))
-    for path, (variants, default_cls) in variants_map.items():
-        for variant_cls in variants:
-            if variant_cls is default_cls:
-                continue
-            for line in _render_variant_panel(path, variant_cls, term_width):
-                print(line)
 
 
 def _strip_annotated(annotation):
@@ -994,66 +893,26 @@ def cli(
         if config_default is not None:
             final_default = config_default
 
-        # Inject placeholder instances for Optional[BaseModel] fields that are
-        # still None so tyro renders their sub-fields in --help. The placeholders
-        # are reset to None on the result for any path the user didn't activate.
-        inactive_optional_paths: list[str] = []
-        optional_inner_classes = _find_optional_model_inner_classes(cls)
-        if optional_inner_classes:
-            placeholder_config: dict = {}
-            for path, inner_cls in optional_inner_classes.items():
-                if _path_is_set_in_config(merged_config, path):
-                    continue
-                if default is not None and _path_value_on_model(default, path) is not None:
-                    continue
-                snake_path = path.replace("-", "_")
-                placeholder = inner_cls().model_dump()
-                placeholder_config = _deep_merge(placeholder_config, _nest_config(snake_path, placeholder))
-                inactive_optional_paths.append(path)
-            if placeholder_config:
-                placeholder_default = _build_default_from_config(
-                    cls,
-                    _deep_merge(merged_config, placeholder_config),
-                    config_path="merged config",
-                )
-                if placeholder_default is not None:
-                    final_default = placeholder_default
+        # --help is rendered entirely from ``cls.model_fields`` — no tyro round-trip,
+        # no fabricated Optional[BaseModel] placeholders. ``_render_help`` already
+        # surfaces sub-fields of unset Optional[BaseModel] with the
+        # ``(optional, default: None)`` annotation in the panel title.
+        if "--help" in remaining_args or "-h" in remaining_args:
+            sys.stdout.write(_render_help(cls, prog=prog, description=description))
+            sys.exit(0)
 
         # Call tyro with processed args.
         # AvoidSubcommands prevents tyro from creating subcommands for union
         # types (e.g. discriminated unions, Optional[BaseModel]). This avoids
         # tyro errors on dict[str, Any] fields in non-default union variants
         # and keeps CLI usage simple — variant selection belongs in config files.
-        wants_help = "--help" in remaining_args or "-h" in remaining_args
-        if wants_help:
-            buf = io.StringIO()
-            try:
-                with contextlib.redirect_stdout(buf):
-                    tyro.cli(
-                        tyro.conf.AvoidSubcommands[cls],
-                        args=remaining_args,
-                        default=final_default,
-                        prog=prog,
-                        description=description,
-                    )
-            except SystemExit:
-                sys.stdout.write(_annotate_optional_panel_titles(buf.getvalue(), inactive_optional_paths))
-                _print_union_variant_panels(cls)
-                raise
-
-        result = tyro.cli(
+        return tyro.cli(
             tyro.conf.AvoidSubcommands[cls],
             args=remaining_args,
             default=final_default,
             prog=prog,
             description=description,
         )
-
-        # Reset placeholder Optional[BaseModel] fields back to None on the result.
-        for path in inactive_optional_paths:
-            _set_path_to_none(result, path)
-
-        return result
     except ConfigFileError as e:
         # Only print formatted error when running from CLI (sys.argv)
         # When args are explicitly passed, re-raise for programmatic handling
