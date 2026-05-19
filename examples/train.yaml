@@ -1,0 +1,23 @@
+run_name: demo-run
+seed: 123
+precision: bf16
+output_dir: ./runs/demo
+checkpoint_steps: [100, 500, 1000]
+
+model:
+  name: qwen-3b
+  hidden_size: 3072
+  num_layers: 32
+
+data:
+  path: ./datasets/c4
+  num_workers: 8
+
+optimizer:
+  type: adamw
+  lr: 1e-4
+  weight_decay: 0.02
+
+extra_kwargs:
+  seq_len: 4096
+  grad_accum: 4

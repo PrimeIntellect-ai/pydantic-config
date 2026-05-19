@@ -28,7 +28,7 @@ import types
 import typing
 from typing import Any, Literal, TypeVar, Union, get_args, get_origin, overload
 
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, ValidationError, model_validator
 
 T = TypeVar("T")
 
@@ -572,6 +572,21 @@ def _format_default_for_help(default: Any) -> str:
     return f"(default: {default})"
 
 
+def _format_field_note(finfo) -> str:
+    """Combine ``Field(description=...)`` with the default annotation into the
+    trailing column shown next to a flag in ``--help``.
+
+    Layout: ``<description>  (default: X)`` with a two-space gap when both are
+    present; if either is empty it's just the other. Returns an empty string
+    for required fields with no description (the flag itself is enough).
+    """
+    description = (finfo.description or "").strip()
+    default = _format_default_for_help(finfo.default)
+    if description and default:
+        return f"{description}  {default}"
+    return description or default
+
+
 def _render_panel(title: str, rows: list[tuple[str, str]], term_width: int) -> list[str]:
     """Render a box-drawn help panel.
 
@@ -609,7 +624,7 @@ def _render_variant_panel(path: str, variant_cls: type, term_width: int) -> list
         flag = f"--{path}.{fname.replace('_', '-')}"
         if type_str:
             flag = f"{flag} {type_str}"
-        rows.append((flag, _format_default_for_help(finfo.default)))
+        rows.append((flag, _format_field_note(finfo)))
     return _render_panel(f"{path} variant: {variant_cls.__name__}", rows, term_width)
 
 
@@ -678,7 +693,7 @@ def _collect_help_panels(
         flag = f"--{full_path}"
         if type_str:
             flag = f"{flag} {type_str}"
-        rows.append((flag, _format_default_for_help(finfo.default)))
+        rows.append((flag, _format_field_note(finfo)))
 
     return rows, panel_lines
 
@@ -1085,6 +1100,76 @@ def _parse_cli_to_dict(
     return remaining, overrides
 
 
+def _canonical_key_map(cls: type) -> dict[str, str]:
+    """For each field on ``cls`` with a ``validation_alias``, return a map from
+    every accepted spelling to a single canonical key (the first
+    ``AliasChoices`` entry, or the alias string when a bare string is used).
+
+    Fields without an alias are absent from the map, so plain keys pass through
+    unchanged. The canonical name is the one pydantic prefers when multiple
+    matches are present — using it consistently lets multi-source merges
+    (TOML + CLI) collapse to a single key before validation.
+    """
+    mapping: dict[str, str] = {}
+    if not hasattr(cls, "model_fields"):
+        return mapping
+    for field_name, finfo in cls.model_fields.items():
+        alias = finfo.validation_alias
+        if alias is None:
+            continue
+        if isinstance(alias, AliasChoices):
+            choices = [c for c in alias.choices if isinstance(c, str)]
+            if not choices:
+                continue
+            primary = choices[0]
+            for c in choices:
+                mapping[c] = primary
+        elif isinstance(alias, str):
+            mapping[alias] = alias
+    return mapping
+
+
+def _normalize_alias_keys(cls: type, data: Any) -> Any:
+    """Recursively rewrite alias keys in ``data`` to their canonical form.
+
+    Without this pass, a field reachable under two names (e.g. ``seed`` and
+    ``random_seed`` via ``AliasChoices("seed", "random_seed")``) can survive
+    the deep-merge step with both keys present — TOML supplying one, CLI the
+    other — and ``extra="forbid"`` then rejects the duplicate. Iteration order
+    is preserved so the higher-precedence layer in ``_deep_merge`` (CLI > file
+    > default) wins when both names collide on the same field.
+    """
+    if not isinstance(data, dict) or not hasattr(cls, "model_fields"):
+        return data
+
+    key_map = _canonical_key_map(cls)
+
+    # Map every accepted key (canonical + aliases) to its inner BaseModel,
+    # used to recurse into nested groups while normalizing.
+    inner_map: dict[str, type] = {}
+    for field_name, finfo in cls.model_fields.items():
+        inner = _strip_annotated(finfo.annotation)
+        if not (isinstance(inner, type) and issubclass(inner, BaseModel)):
+            continue
+        inner_map[field_name] = inner
+        alias = finfo.validation_alias
+        if isinstance(alias, AliasChoices):
+            for c in alias.choices:
+                if isinstance(c, str):
+                    inner_map[c] = inner
+        elif isinstance(alias, str):
+            inner_map[alias] = inner
+
+    result: dict = {}
+    for key, value in data.items():
+        canonical = key_map.get(key, key)
+        inner_cls = inner_map.get(key)
+        if inner_cls is not None and isinstance(value, dict):
+            value = _normalize_alias_keys(inner_cls, value)
+        result[canonical] = value
+    return result
+
+
 @overload
 def cli(cls: type[T]) -> T: ...
 
@@ -1195,6 +1280,9 @@ def cli(
         if default is not None and isinstance(default, BaseModel):
             default_dict = default.model_dump(exclude_unset=True)
         merged = _deep_merge(_deep_merge(default_dict, toml_dict), cli_overrides)
+        # Collapse ``validation_alias`` duplicates so e.g. ``seed`` (TOML) +
+        # ``random_seed`` (CLI alias) merge into a single canonical key.
+        merged = _normalize_alias_keys(cls, merged)
         try:
             return cls.model_validate(merged)
         except ValidationError as e:

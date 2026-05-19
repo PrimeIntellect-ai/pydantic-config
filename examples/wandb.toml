@@ -1,0 +1,3 @@
+project = "prime-rl-ablations"
+entity = "primeintellect"
+tags = ["v2", "muon", "bf16"]
