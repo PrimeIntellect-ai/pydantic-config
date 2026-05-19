@@ -636,44 +636,50 @@ def _extract_field_docstrings(cls: type) -> dict[str, str]:
     return result
 
 
-def _format_field_note(finfo, docstring: str = "") -> str:
-    """Combine ``Field(description=...)`` with the default annotation into the
-    trailing column shown next to a flag in ``--help``.
+def _field_description(finfo, docstring: str = "") -> str:
+    """Return the description text for a field (``Field(description=...)``
+    with PEP 224 docstring as fallback)."""
+    return (finfo.description or docstring or "").strip()
 
-    Layout: ``<description>  (default: X)`` with a two-space gap when both are
-    present; if either is empty it's just the other. Returns an empty string
-    for required fields with no description (the flag itself is enough).
-    """
-    description = (finfo.description or docstring or "").strip()
-    default = _format_default_for_help(finfo.default)
-    if description and default:
-        return f"{description}  {default}"
-    return description or default
+
+# A help row is (flag_with_metavar, description, annotation) where annotation
+# is the right-aligned ``(default: X)`` / ``(required)`` tag.
+_HelpRow = tuple[str, str, str]
 
 
 def _render_panel(
-    title: str, rows: list[tuple[str, str]], term_width: int, min_flag_w: int = 0
+    title: str, rows: list[_HelpRow], term_width: int, min_flag_w: int = 0
 ) -> list[str]:
     """Render a box-drawn help panel.
 
-    ``rows`` is a list of ``(flag_with_metavar, annotation)`` pairs.
-    Empty ``rows`` returns an empty list (caller should suppress the panel).
-
-    ``min_flag_w`` sets a minimum width for the flag column so descriptions
-    start at the same column across panels.
+    ``rows`` is a list of ``(flag, description, annotation)`` triples.
+    The annotation (e.g. ``(default: 42)``) is right-aligned to the panel
+    border so the parenthesized tags form a clean column.
     """
     if not rows:
         return []
 
-    flag_w = max(min_flag_w, max(len(f) for f, _ in rows))
-    body_lines = [f"{f:<{flag_w}}  {n}".rstrip() for f, n in rows]
-    content_width = max(max(len(line) for line in body_lines), len(title) + 2)
+    flag_w = max(min_flag_w, max(len(f) for f, _, _ in rows))
+
+    # Compute box width from the widest possible line.
+    widths: list[int] = []
+    for flag, desc, anno in rows:
+        left = f"{flag:<{flag_w}}  {desc}".rstrip()
+        w = len(left) + (2 + len(anno) if anno else 0)
+        widths.append(w)
+    content_width = max(max(widths), len(title) + 2)
     box_total = max(term_width, content_width + 4, len(title) + 6)
     inner = box_total - 4
 
     horiz = "─" * max(1, box_total - len(title) - 5)
     lines = [f"╭─ {title} {horiz}╮"]
-    for line in body_lines:
+    for flag, desc, anno in rows:
+        left = f"{flag:<{flag_w}}  {desc}".rstrip()
+        if anno:
+            gap = inner - len(left) - len(anno)
+            line = f"{left}{' ' * max(2, gap)}{anno}"
+        else:
+            line = left
         truncated = line if len(line) <= inner else line[: inner - 1] + "…"
         lines.append(f"│ {truncated:<{inner}} │")
     lines.append(f"╰{'─' * (box_total - 2)}╯")
@@ -693,12 +699,12 @@ def _is_union(annotation) -> bool:
     return origin is Union or origin is getattr(types, "UnionType", None)
 
 
-_HelpPanel = tuple[str, list[tuple[str, str]]]
+_HelpPanel = tuple[str, list[_HelpRow]]
 
 
 def _collect_help_panels(
     cls: type, prefix: str = ""
-) -> tuple[list[tuple[str, str]], list[_HelpPanel]]:
+) -> tuple[list[_HelpRow], list[_HelpPanel]]:
     """Walk ``cls.model_fields`` to collect help rows and sub-panel specs.
 
     Returns ``(rows, sub_panels)`` where ``rows`` is the list of leaf
@@ -706,9 +712,12 @@ def _collect_help_panels(
     ``sub_panels`` is a list of ``(title, rows)`` tuples for every
     sub-config / Optional[BaseModel] / multi-model union variant.
     """
-    rows: list[tuple[str, str]] = []
+    rows: list[_HelpRow] = []
     sub_panels: list[_HelpPanel] = []
     docstrings = _extract_field_docstrings(cls)
+
+    def _make_row(flag: str, finfo, ds: str = "") -> _HelpRow:
+        return (flag, _field_description(finfo, ds), _format_default_for_help(finfo.default))
 
     for fname, finfo in cls.model_fields.items():
         kebab = fname.replace("_", "-")
@@ -719,14 +728,14 @@ def _collect_help_panels(
             inner = _strip_annotated(annotation)
             variants = [a for a in get_args(inner) if a is not type(None)]
             for variant_cls in variants:
-                variant_docstrings = _extract_field_docstrings(variant_cls)
-                vrows: list[tuple[str, str]] = []
+                vdocs = _extract_field_docstrings(variant_cls)
+                vrows: list[_HelpRow] = []
                 for vfname, vfinfo in variant_cls.model_fields.items():
                     type_str = _format_type_for_help(vfinfo.annotation)
                     flag = f"--{full_path}.{vfname.replace('_', '-')}"
                     if type_str:
                         flag = f"{flag} {type_str}"
-                    vrows.append((flag, _format_field_note(vfinfo, variant_docstrings.get(vfname, ""))))
+                    vrows.append(_make_row(flag, vfinfo, vdocs.get(vfname, "")))
                 sub_panels.append((f"{full_path} variant: {variant_cls.__name__}", vrows))
             continue
 
@@ -751,7 +760,7 @@ def _collect_help_panels(
         flag = f"--{full_path}"
         if type_str:
             flag = f"{flag} {type_str}"
-        rows.append((flag, _format_field_note(finfo, docstrings.get(fname, ""))))
+        rows.append(_make_row(flag, finfo, docstrings.get(fname, "")))
 
     return rows, sub_panels
 
@@ -773,13 +782,13 @@ def _render_help(
 
     root_rows, sub_panels = _collect_help_panels(cls)
 
-    header_rows = [("-h, --help", "show this help message and exit"), *root_rows]
+    header_rows: list[_HelpRow] = [("-h, --help", "show this help message and exit", ""), *root_rows]
     all_panels: list[_HelpPanel] = [("options", header_rows), *sub_panels]
 
     # Compute a global flag column width so descriptions start at the same
     # column across every panel.
     global_flag_w = max(
-        (len(flag) for _, rows in all_panels for flag, _ in rows),
+        (len(flag) for _, rows in all_panels for flag, _, _ in rows),
         default=0,
     )
 
