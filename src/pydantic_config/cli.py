@@ -778,7 +778,11 @@ def _collect_help_panels(
             non_none = [a for a in get_args(inner) if a is not type(None)]
             inner_cls = non_none[0]
             child_rows, child_panels = _collect_help_panels(inner_cls, prefix=full_path)
-            sub_panels.append((f"{full_path} options (optional, default: None)", child_rows))
+            if isinstance(finfo.default, BaseModel):
+                tag = "optional, enabled by default"
+            else:
+                tag = "optional, default: None"
+            sub_panels.append((f"{full_path} options ({tag})", child_rows))
             sub_panels.extend(child_panels)
             continue
 

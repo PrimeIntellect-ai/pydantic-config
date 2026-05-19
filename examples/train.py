@@ -60,6 +60,15 @@ class DataConfig(BaseConfig):
     """Shuffle the training set each epoch"""
 
 
+class CompileConfig(BaseConfig):
+    backend: str = "inductor"
+    """torch.compile backend"""
+    mode: str = "default"
+    """Compilation mode (default, reduce-overhead, max-autotune)"""
+    fullgraph: bool = False
+    """Require the entire model to be capturable in a single graph"""
+
+
 class ModelConfig(BaseConfig):
     name: str = "qwen-1b"
     """Checkpoint name or HuggingFace ID"""
@@ -67,8 +76,6 @@ class ModelConfig(BaseConfig):
     """Transformer hidden dimension"""
     num_layers: int = 24
     """Number of transformer blocks"""
-    compile: bool = True
-    """Wrap the model in torch.compile"""
 
 
 class Config(BaseConfig):
@@ -88,6 +95,9 @@ class Config(BaseConfig):
     data: DataConfig = DataConfig()
 
     optimizer: OptimizerConfig = AdamWConfig()
+
+    compile: CompileConfig | None = CompileConfig()
+    """torch.compile settings (pass --no-compile to disable)"""
 
     wandb: WandbConfig | None = None
 

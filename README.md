@@ -146,6 +146,23 @@ uv run python examples/train.py --run-name r1 --wandb @ examples/wandb.toml     
   <img src="assets/optional.svg" alt="Optional sub-config" width="700">
 </p>
 
+### Disabling an optional sub-config
+
+A field typed `CompileConfig | None = CompileConfig()` is on by default.
+`--no-compile` disables it; `--compile None` does the same. Sub-fields can
+still be overridden without disabling: `--compile.mode max-autotune`.
+In TOML, write `compile = "None"` to disable.
+
+```bash
+uv run python examples/train.py --run-name r1 --no-compile                              # disable
+uv run python examples/train.py --run-name r1 --compile.mode max-autotune               # override sub-field
+uv run python examples/train.py --run-name r1 --wandb @ examples/wandb.toml --no-wandb  # file enables, CLI disables
+```
+
+<p align="center">
+  <img src="assets/disable_optional.svg" alt="Disable optional sub-config" width="700">
+</p>
+
 ### Discriminated unions
 
 Multi-variant fields (e.g. `optimizer: AdamWConfig | MuonConfig`) are switched
@@ -160,21 +177,6 @@ uv run python examples/train.py --run-name r1 --optimizer @ examples/optimizer.t
 
 <p align="center">
   <img src="assets/union_switch.svg" alt="Discriminated union" width="700">
-</p>
-
-### Disabling an optional sub-config
-
-An optional sub-config that's been enabled (by a file or defaults) can be
-turned off again with `--no-<name>` or by passing the literal `None`.
-In TOML, write `wandb = "None"` (the string `"None"` is coerced to null).
-
-```bash
-uv run python examples/train.py --run-name r1 --wandb @ examples/wandb.toml --no-wandb  # file enables, CLI disables
-uv run python examples/train.py --run-name r1 --wandb None                              # explicit None
-```
-
-<p align="center">
-  <img src="assets/disable_optional.svg" alt="Disable optional sub-config" width="700">
 </p>
 
 ### Validation aliases
