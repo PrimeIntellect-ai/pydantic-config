@@ -21,6 +21,7 @@ import copy
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 import types
@@ -153,6 +154,19 @@ def _colorize(text: str, *codes: str) -> str:
     return "".join(codes) + text + _RESET
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _visible_len(text: str) -> int:
+    """Length of ``text`` excluding ANSI colour escape sequences.
+
+    The box-drawing renderer pads rows to ``inner_width`` using this so
+    coloured content (e.g. ``_colorize("foo", _BOLD)``) still produces a
+    right-aligned border.
+    """
+    return len(_ANSI_RE.sub("", text))
+
+
 class ConfigFileError(Exception):
     """Error loading or parsing a config file."""
 
@@ -189,8 +203,13 @@ def _print_config_error_and_exit(error: ConfigFileError) -> None:
         return lines or [""]
 
     def box_line(content: str) -> str:
-        """Create a line inside the box with proper padding."""
-        padding = inner_width - len(content)
+        """Create a line inside the box with proper padding.
+
+        Uses ``_visible_len`` so ANSI escape codes inside ``content`` don't get
+        counted as printable width — otherwise coloured rows make the right
+        border drift left.
+        """
+        padding = inner_width - _visible_len(content)
         return f"{_colorize(vert, _RED)} {content}{' ' * padding} {_colorize(vert, _RED)}"
 
     # Build the error message content

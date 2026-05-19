@@ -1406,6 +1406,34 @@ def test_cli_validation_error_nested_field_renders_dotted_flag():
     assert "integer" in msg
 
 
+def test_cli_validation_error_box_right_border_aligns_with_color(capsys, monkeypatch):
+    """Coloured rows inside the error box must not push the right border left.
+    Guard against counting ANSI escape codes as printable width."""
+    import re
+
+    class C(BaseConfig):
+        foo: int = 0
+
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setenv("COLUMNS", "80")
+    monkeypatch.setattr("sys.argv", ["demo", "--foo", "dskfj"])
+    with pytest.raises(SystemExit):
+        cli(C)
+    err = capsys.readouterr().err
+
+    ansi = re.compile(r"\x1b\[[0-9;]*m")
+    visible_widths = {
+        len(ansi.sub("", line))
+        for line in err.splitlines()
+        if line.startswith(("\x1b[31m│", "│", "\x1b[31m╭", "╭", "\x1b[31m╰", "╰"))
+    }
+    # Every framed line should render to the same printable width — otherwise
+    # the right border is misaligned.
+    assert len(visible_widths) == 1, (
+        f"Box rows have inconsistent visible widths: {sorted(visible_widths)}\n{err}"
+    )
+
+
 def test_cli_validation_error_snake_case_loc_renders_as_kebab():
     """Pydantic error locs use snake_case attribute names; we should kebab-case
     them when rendering as CLI flags."""
