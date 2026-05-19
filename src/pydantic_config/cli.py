@@ -32,6 +32,7 @@ import os
 import shutil
 import sys
 import types
+import typing
 from typing import Any, Literal, TypeVar, Union, get_args, get_origin, overload
 
 import tyro
@@ -557,6 +558,12 @@ def _strip_annotated(annotation):
     return annotation
 
 
+def _is_union(annotation) -> bool:
+    """``True`` if ``annotation`` is ``Union[...]`` or PEP-604 ``X | Y``."""
+    origin = get_origin(annotation)
+    return origin is Union or origin is getattr(types, "UnionType", None)
+
+
 def _collect_help_panels(
     cls: type, term_width: int, prefix: str = ""
 ) -> tuple[list[tuple[str, str]], list[str]]:
@@ -794,6 +801,240 @@ def _build_default_from_config(cls: type[T], config: dict, config_path: str | No
     except Exception as e:
         source = f" from '{config_path}'" if config_path else ""
         raise ConfigFileError(f"Failed to validate config{source}: {e}") from e
+
+
+def _annotation_is_bool(annotation) -> bool:
+    """``True`` if ``annotation`` is ``bool``, ``Optional[bool]``, etc."""
+    inner = _strip_annotated(annotation)
+    if inner is bool:
+        return True
+    if _is_union(inner):
+        non_none = [a for a in get_args(inner) if a is not type(None)]
+        return len(non_none) == 1 and non_none[0] is bool
+    return False
+
+
+def _annotation_is_list(annotation) -> bool:
+    """``True`` if ``annotation`` is ``list[T]`` or ``Optional[list[T]]``."""
+    inner = _strip_annotated(annotation)
+    if get_origin(inner) is list:
+        return True
+    if _is_union(inner):
+        non_none = [a for a in get_args(inner) if a is not type(None)]
+        return len(non_none) == 1 and get_origin(non_none[0]) is list
+    return False
+
+
+class _FieldMeta(typing.NamedTuple):
+    snake_path: str  # dotted snake_case path for nesting into the override dict
+    annotation: object  # field annotation
+    is_bool: bool
+    is_list: bool
+
+
+def _build_field_meta_map(cls: type, prefix: str = "") -> tuple[dict[str, _FieldMeta], set[str]]:
+    """Walk ``cls.model_fields`` to build a kebab-case-path → ``_FieldMeta`` map
+    plus a set of "interior" kebab-case paths (paths whose target is itself a
+    ``BaseModel``). Both maps are needed by ``_parse_cli_to_dict`` so it can
+    look up leaves in O(1) and give a clean ``--wandb foo``-style error when
+    the user lands on an interior node.
+
+    Field-level ``validation_alias=AliasChoices(...)`` entries are added at the
+    same depth — every alias name produces an additional entry so users can
+    write the CLI flag under any accepted spelling.
+    """
+    leaves: dict[str, _FieldMeta] = {}
+    interior: set[str] = set()
+    if not hasattr(cls, "model_fields"):
+        return leaves, interior
+
+    for field_name, field_info in cls.model_fields.items():
+        annotation = field_info.annotation
+
+        # Field names + every alias accepted at validation time.
+        names = [field_name]
+        alias = field_info.validation_alias
+        if alias is not None:
+            from pydantic import AliasChoices
+
+            if isinstance(alias, AliasChoices):
+                for choice in alias.choices:
+                    if isinstance(choice, str) and choice != field_name:
+                        names.append(choice)
+            elif isinstance(alias, str) and alias != field_name:
+                names.append(alias)
+
+        for name in names:
+            kebab = name.replace("_", "-")
+            full_path = f"{prefix}.{kebab}" if prefix else kebab
+            snake_path = (prefix.replace("-", "_") + "." if prefix else "") + name
+
+            inner = _strip_annotated(annotation)
+            is_plain_basemodel = isinstance(inner, type) and issubclass(inner, BaseModel)
+            if is_plain_basemodel:
+                interior.add(full_path)
+                child_leaves, child_interior = _build_field_meta_map(inner, prefix=full_path)
+                leaves.update(child_leaves)
+                interior.update(child_interior)
+            else:
+                leaves[full_path] = _FieldMeta(
+                    snake_path=snake_path,
+                    annotation=annotation,
+                    is_bool=_annotation_is_bool(annotation),
+                    is_list=_annotation_is_list(annotation),
+                )
+
+    return leaves, interior
+
+
+def _coerce_bool_literal(value: str) -> bool | None:
+    """Recognise the boolean string literals tyro previously coerced for us."""
+    if value in ("true", "True", "1"):
+        return True
+    if value in ("false", "False", "0"):
+        return False
+    return None
+
+
+def _set_nested(out: dict, snake_path: str, value: Any) -> None:
+    """Set ``value`` at ``snake_path`` inside ``out``, creating intermediate dicts."""
+    parts = snake_path.split(".")
+    node = out
+    for part in parts[:-1]:
+        node = node.setdefault(part, {})
+        if not isinstance(node, dict):
+            # An earlier write put a non-dict here; bail rather than clobber.
+            return
+    node[parts[-1]] = value
+
+
+def _parse_cli_to_dict(
+    args: list[str], cls: type, optional_paths: set[str]
+) -> tuple[list[str], dict]:
+    """Parse remaining CLI tokens into a sparse override dict.
+
+    Runs *after* ``_process_args``, ``_expand_bare_optional_flags`` and
+    ``_extract_json_value_args`` have stripped ``@``-file references,
+    Optional[BaseModel] / discriminated-union sub-flags, and JSON-encoded
+    dict/list values. What's left is leaf-scalar / bool / typed-list overrides
+    against ``cls.model_fields``.
+
+    Returns ``(remaining_args, overrides)`` — anything not recognised as a
+    ``--flag`` token stays in ``remaining_args`` so the caller can decide
+    whether to error.
+
+    Behaviour:
+      - ``--name value`` and ``--name=value`` are equivalent.
+      - ``--flag`` on a bool field sets it to True; ``--no-flag`` sets it to False.
+        A bool flag may also take an explicit ``true|false|1|0`` value.
+      - ``--items 0.7 0.3`` consumes consecutive non-``--`` tokens as list members.
+        A leading ``-`` (e.g. ``-1e-3``) is a value, not a flag — only ``--`` boundaries break list consumption.
+      - Unknown leaves and tokens that land on an interior (BaseModel) path raise
+        ``ConfigFileError`` with a "did you mean" suggestion built from the leaf paths.
+    """
+    leaves, interior = _build_field_meta_map(cls)
+    remaining: list[str] = []
+    overrides: dict = {}
+    unknown: list[tuple[str, str | None]] = []
+
+    i = 0
+    n = len(args)
+    while i < n:
+        token = args[i]
+        if not token.startswith("--"):
+            remaining.append(token)
+            i += 1
+            continue
+
+        flag_part, eq_value = (token[2:].split("=", 1) + [None])[:2] if "=" in token[2:] else (token[2:], None)
+
+        # 1. Defensive skip for paths handled upstream by _expand_bare_optional_flags.
+        #    Those should already be gone, but if a caller passes a custom args list
+        #    directly to cli(), be lenient.
+        if flag_part in optional_paths or _match_optional_prefix(flag_part, optional_paths):
+            remaining.append(token)
+            i += 1
+            continue
+
+        # 2. --no-flag negation for booleans.
+        if flag_part.startswith("no-") and flag_part[3:] in leaves and leaves[flag_part[3:]].is_bool:
+            _set_nested(overrides, leaves[flag_part[3:]].snake_path, False)
+            i += 1
+            continue
+
+        # 3. Interior (BaseModel) path → guide the user toward dotted form.
+        if flag_part in interior:
+            sub_flags = sorted(p for p in leaves if p.startswith(flag_part + "."))
+            hint = f" Try one of: {', '.join('--' + p for p in sub_flags[:5])}" if sub_flags else ""
+            raise ConfigFileError(
+                f"--{flag_part} is a config group, not a leaf field.{hint}"
+            )
+
+        # 4. Leaf field lookup.
+        meta = leaves.get(flag_part)
+        if meta is None:
+            unknown.append((flag_part, eq_value))
+            # Consume value-shaped follower so it doesn't pollute ``remaining``.
+            if eq_value is None and i + 1 < n and not args[i + 1].startswith("--"):
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if meta.is_bool:
+            if eq_value is not None:
+                coerced = _coerce_bool_literal(eq_value)
+                _set_nested(overrides, meta.snake_path, coerced if coerced is not None else eq_value)
+                i += 1
+            elif i + 1 < n and (lit := _coerce_bool_literal(args[i + 1])) is not None:
+                _set_nested(overrides, meta.snake_path, lit)
+                i += 2
+            else:
+                _set_nested(overrides, meta.snake_path, True)
+                i += 1
+            continue
+
+        if meta.is_list and eq_value is None:
+            # Greedy consume contiguous non-flag tokens. ``--`` (any length ≥2) is a boundary;
+            # a single ``-`` prefix (e.g. ``-1e-3``) is a value.
+            j = i + 1
+            values: list[str] = []
+            while j < n and not args[j].startswith("--"):
+                values.append(args[j])
+                j += 1
+            if values:
+                _set_nested(overrides, meta.snake_path, values)
+                i = j
+            else:
+                # Bare ``--items`` with no follower — treat as empty list override.
+                _set_nested(overrides, meta.snake_path, [])
+                i += 1
+            continue
+
+        # 5. Scalar field: consume the next token (or use the ``=value``).
+        if eq_value is not None:
+            _set_nested(overrides, meta.snake_path, eq_value)
+            i += 1
+            continue
+        if i + 1 >= n:
+            raise ConfigFileError(f"--{flag_part} requires a value")
+        _set_nested(overrides, meta.snake_path, args[i + 1])
+        i += 2
+
+    if unknown:
+        import difflib
+
+        lines = ["Unrecognized command-line option(s):"]
+        valid_kebab = sorted(leaves)
+        for flag, _ in unknown:
+            suggestions = difflib.get_close_matches(flag, valid_kebab, n=3, cutoff=0.6)
+            if suggestions:
+                lines.append(f"  --{flag}   (did you mean {', '.join('--' + s for s in suggestions)}?)")
+            else:
+                lines.append(f"  --{flag}")
+        raise ConfigFileError("\n".join(lines))
+
+    return remaining, overrides
 
 
 @overload

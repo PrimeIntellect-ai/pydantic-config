@@ -1374,6 +1374,138 @@ def test_cli_validation_alias_accepts_alias_name():
     assert config.inner.value == 5
 
 
+# Tests: _parse_cli_to_dict — direct unit tests of the new argv parser.
+
+
+def test_parse_cli_to_dict_equals_form():
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class C(BaseConfig):
+        name: str = ""
+        count: int = 0
+
+    remaining, overrides = _parse_cli_to_dict(["--name=hello", "--count=7"], C, set())
+    assert remaining == []
+    assert overrides == {"name": "hello", "count": "7"}
+
+
+def test_parse_cli_to_dict_space_form():
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class C(BaseConfig):
+        name: str = ""
+
+    remaining, overrides = _parse_cli_to_dict(["--name", "hello"], C, set())
+    assert remaining == []
+    assert overrides == {"name": "hello"}
+
+
+def test_parse_cli_to_dict_bool_bare():
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class C(BaseConfig):
+        enabled: bool = False
+
+    remaining, overrides = _parse_cli_to_dict(["--enabled"], C, set())
+    assert overrides == {"enabled": True}
+
+
+def test_parse_cli_to_dict_bool_no_prefix():
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class C(BaseConfig):
+        enabled: bool = True
+
+    remaining, overrides = _parse_cli_to_dict(["--no-enabled"], C, set())
+    assert overrides == {"enabled": False}
+
+
+def test_parse_cli_to_dict_bool_explicit_value():
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class C(BaseConfig):
+        enabled: bool = False
+
+    remaining, overrides = _parse_cli_to_dict(["--enabled", "false"], C, set())
+    assert overrides == {"enabled": False}
+
+
+def test_parse_cli_to_dict_list_space_separated():
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class C(BaseConfig):
+        items: list[int] = []
+
+    remaining, overrides = _parse_cli_to_dict(["--items", "1", "2", "3"], C, set())
+    assert overrides == {"items": ["1", "2", "3"]}
+
+
+def test_parse_cli_to_dict_negative_number_value():
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class C(BaseConfig):
+        lr: float = 0.0
+
+    remaining, overrides = _parse_cli_to_dict(["--lr", "-1e-3"], C, set())
+    assert overrides == {"lr": "-1e-3"}
+
+
+def test_parse_cli_to_dict_nested_field():
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class Sub(BaseConfig):
+        x: int = 0
+
+    class C(BaseConfig):
+        sub: Sub = Sub()
+
+    remaining, overrides = _parse_cli_to_dict(["--sub.x", "5"], C, set())
+    assert overrides == {"sub": {"x": "5"}}
+
+
+def test_parse_cli_to_dict_unknown_flag_errors_with_suggestions():
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class C(BaseConfig):
+        seed: int = 0
+        rate: float = 0.0
+
+    with pytest.raises(ConfigFileError, match="seed"):
+        # Close-ish typo to "seed" should produce a suggestion.
+        _parse_cli_to_dict(["--seedz", "5"], C, set())
+
+
+def test_parse_cli_to_dict_interior_path_errors():
+    """``--sub`` (a BaseModel group) without a sub-field name should error
+    pointing at one of its leaves, not silently consume the next token."""
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class Sub(BaseConfig):
+        x: int = 0
+        y: int = 1
+
+    class C(BaseConfig):
+        sub: Sub = Sub()
+
+    with pytest.raises(ConfigFileError, match=r"--sub.*group|--sub\.x"):
+        _parse_cli_to_dict(["--sub", "5"], C, set())
+
+
+def test_parse_cli_to_dict_alias_accepted():
+    from pydantic import AliasChoices
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class Inner(BaseConfig):
+        value: int = 0
+
+    class C(BaseConfig):
+        inner: Annotated[Inner, Field(validation_alias=AliasChoices("inner", "student"))] = Inner()
+
+    remaining, overrides = _parse_cli_to_dict(["--student.value", "9"], C, set())
+    # Alias resolves to the canonical snake-case path.
+    assert overrides == {"student": {"value": "9"}}
+
+
 def test_render_help_returns_string_with_panels():
     """``_render_help`` should produce a usage line + an "options" panel for
     root scalars + a separate panel per sub-config + variant panels for
