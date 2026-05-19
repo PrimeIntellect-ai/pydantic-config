@@ -196,19 +196,47 @@ uv run python examples/train.py @ examples/train.toml --seed 99    # TOML alias 
   <img src="assets/alias.svg" alt="Validation alias" width="700">
 </p>
 
-### Field descriptions
+### Legacy key remapping via before-validators
 
-Descriptions shown in `--help` can be set via `Field(description=...)` or a
-PEP 224 attribute docstring (a string literal directly after the field). The
-docstring form keeps simple fields clean; `Field(description=...)` takes
-precedence when both are present.
+When a config key is renamed (e.g. `model.*` → `student.model.*`), a
+`model_validator(mode="before")` can remap the old key so existing TOML files
+and CLI flags keep working. Unknown CLI flags are passed through to the
+validator instead of being rejected, so both the old and new paths work
+transparently.
 
 ```python
-class ModelConfig(BaseConfig):
-    hidden_size: int = 2048
-    """Transformer hidden dimension"""              # PEP 224 docstring
+class Config(BaseConfig):
+    student: StudentConfig = StudentConfig()
 
-    seed: int = Field(42, description="Random seed")  # Field(description=...)
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_model_to_student(cls, data):
+        if isinstance(data, dict) and "model" in data and "student" not in data:
+            data["student"] = {"model": data.pop("model")}
+        return data
+```
+
+```bash
+uv run python examples/train.py --run-name r1 --model.name qwen-7b            # legacy CLI path
+uv run python examples/train.py --run-name r1 --student.model.name qwen-7b    # new CLI path
+uv run python examples/train.py @ examples/train.toml                         # TOML uses legacy [model]
+```
+
+### Field and model descriptions
+
+Field descriptions shown in `--help` can be set via `Field(description=...)`
+or a PEP 224 attribute docstring (a string literal directly after the field).
+
+Sub-config panel titles pick up the class docstring of the inner `BaseModel`,
+or the field-level description/docstring if one is set. This lets `--help`
+communicate what each config group is for without extra boilerplate.
+
+```python
+class DataConfig(BaseConfig):
+    """Dataset and dataloader settings."""      # → shows in the panel title
+
+    num_workers: int = 4
+    """DataLoader worker processes"""           # → shows next to --data.num-workers
 ```
 
 ### `--flag=value` form

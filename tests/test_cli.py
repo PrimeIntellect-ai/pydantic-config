@@ -1585,16 +1585,22 @@ def test_parse_cli_to_dict_nested_field():
     assert overrides == {"sub": {"x": "5"}}
 
 
-def test_parse_cli_to_dict_unknown_flag_errors_with_suggestions():
+def test_parse_cli_to_dict_unknown_flag_passed_through():
     from pydantic_config.cli import _parse_cli_to_dict
 
     class C(BaseConfig):
         seed: int = 0
-        rate: float = 0.0
 
-    with pytest.raises(ConfigFileError, match="seed"):
-        # Close-ish typo to "seed" should produce a suggestion.
-        _parse_cli_to_dict(["--seedz", "5"], C, set())
+    remaining, overrides = _parse_cli_to_dict(["--seedz", "5"], C, set())
+    assert overrides == {"seedz": "5"}
+
+
+def test_cli_unknown_flag_rejected_by_validation():
+    class C(BaseConfig):
+        seed: int = 0
+
+    with pytest.raises(ConfigFileError, match="seedz"):
+        cli(C, args=["--seedz", "5"])
 
 
 def test_parse_cli_to_dict_interior_path_errors():

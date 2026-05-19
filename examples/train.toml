@@ -4,6 +4,7 @@ precision = "bf16"
 output_dir = "./runs/demo"
 checkpoint_steps = [100, 500, 1000]
 
+# Legacy key — the before-validator on Config remaps model.* → student.model.*
 [model]
 name = "qwen-3b"
 hidden_size = 3072

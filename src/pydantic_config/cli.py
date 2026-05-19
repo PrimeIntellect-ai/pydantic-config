@@ -736,6 +736,21 @@ def _is_union(annotation) -> bool:
 _HelpPanel = tuple[str, list[_HelpRow]]
 
 
+def _panel_description(inner_cls: type, finfo, field_docstring: str = "") -> str:
+    """Derive a one-line description for a sub-config panel title.
+
+    Precedence: ``Field(description=...)`` > PEP 224 docstring below the field
+    > the inner class's ``__doc__`` (first line only).
+    """
+    desc = (finfo.description or field_docstring or "").strip()
+    if desc:
+        return desc
+    cls_doc = getattr(inner_cls, "__doc__", None)
+    if cls_doc:
+        return cls_doc.strip().split("\n")[0].strip()
+    return ""
+
+
 def _collect_help_panels(
     cls: type, prefix: str = ""
 ) -> tuple[list[_HelpRow], list[_HelpPanel]]:
@@ -782,14 +797,20 @@ def _collect_help_panels(
                 tag = "optional, enabled by default"
             else:
                 tag = "optional, default: None"
-            sub_panels.append((f"{full_path} options ({tag})", child_rows))
+            desc = _panel_description(inner_cls, finfo, docstrings.get(fname, ""))
+            title = f"{full_path} options ({tag})"
+            if desc:
+                title = f"{full_path}: {desc} ({tag})"
+            sub_panels.append((title, child_rows))
             sub_panels.extend(child_panels)
             continue
 
         inner = _strip_annotated(annotation)
         if isinstance(inner, type) and issubclass(inner, BaseModel):
             child_rows, child_panels = _collect_help_panels(inner, prefix=full_path)
-            sub_panels.append((f"{full_path} options", child_rows))
+            desc = _panel_description(inner, finfo, docstrings.get(fname, ""))
+            title = f"{full_path}: {desc}" if desc else f"{full_path} options"
+            sub_panels.append((title, child_rows))
             sub_panels.extend(child_panels)
             continue
 
@@ -1123,13 +1144,13 @@ def _parse_cli_to_dict(
         A bool flag may also take an explicit ``true|false|1|0`` value.
       - ``--items 0.7 0.3`` consumes consecutive non-``--`` tokens as list members.
         A leading ``-`` (e.g. ``-1e-3``) is a value, not a flag — only ``--`` boundaries break list consumption.
-      - Unknown leaves and tokens that land on an interior (BaseModel) path raise
-        ``ConfigFileError`` with a "did you mean" suggestion built from the leaf paths.
+      - Unknown leaves are stored as overrides under their raw path so
+        ``model_validator(mode="before")`` can remap legacy keys. If no
+        validator handles them, pydantic's ``extra="forbid"`` rejects them.
     """
     leaves, interior = _build_field_meta_map(cls)
     remaining: list[str] = []
     overrides: dict = {}
-    unknown: list[tuple[str, str | None]] = []
 
     i = 0
     n = len(args)
@@ -1167,11 +1188,20 @@ def _parse_cli_to_dict(
         # 4. Leaf field lookup.
         meta = leaves.get(flag_part)
         if meta is None:
-            unknown.append((flag_part, eq_value))
-            # Consume value-shaped follower so it doesn't pollute ``remaining``.
-            if eq_value is None and i + 1 < n and not args[i + 1].startswith("--"):
+            # Unknown flag — store it as an override under its raw path.
+            # A ``model_validator(mode="before")`` on the config class can
+            # remap legacy keys (e.g. ``model.*`` → ``student.model.*``).
+            # If no validator handles it, pydantic's ``extra="forbid"``
+            # rejects it at validation time.
+            snake_path = flag_part.replace("-", "_")
+            if eq_value is not None:
+                _set_nested(overrides, snake_path, eq_value)
+                i += 1
+            elif i + 1 < n and not args[i + 1].startswith("--"):
+                _set_nested(overrides, snake_path, args[i + 1])
                 i += 2
             else:
+                _set_nested(overrides, snake_path, True)
                 i += 1
             continue
 
@@ -1214,19 +1244,6 @@ def _parse_cli_to_dict(
             raise ConfigFileError(f"--{flag_part} requires a value")
         _set_nested(overrides, meta.snake_path, args[i + 1])
         i += 2
-
-    if unknown:
-        import difflib
-
-        lines = ["Unrecognized command-line option(s):"]
-        valid_kebab = sorted(leaves)
-        for flag, _ in unknown:
-            suggestions = difflib.get_close_matches(flag, valid_kebab, n=3, cutoff=0.6)
-            if suggestions:
-                lines.append(f"  --{flag}   (did you mean {', '.join('--' + s for s in suggestions)}?)")
-            else:
-                lines.append(f"  --{flag}")
-        raise ConfigFileError("\n".join(lines))
 
     return remaining, overrides
 

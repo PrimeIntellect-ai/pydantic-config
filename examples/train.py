@@ -14,12 +14,14 @@ from pathlib import Path
 from pprint import pprint
 from typing import Annotated, Literal
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 
 from pydantic_config import cli, BaseConfig
 
 
 class WandbConfig(BaseConfig):
+    """Weights & Biases logging."""
+
     project: str = "prime-rl"
     """W&B project name"""
 
@@ -52,6 +54,8 @@ OptimizerConfig = Annotated[AdamWConfig | MuonConfig, Field(discriminator="type"
 
 
 class DataConfig(BaseConfig):
+    """Dataset and dataloader settings."""
+
     path: Path = Path("./data")
     """Path to the dataset directory"""
     num_workers: int = 4
@@ -78,6 +82,10 @@ class ModelConfig(BaseConfig):
     """Number of transformer blocks"""
 
 
+class StudentConfig(BaseConfig):
+    model: ModelConfig = ModelConfig()
+
+
 class Config(BaseConfig):
     run_name: str = Field(description="Unique identifier for this training run")
 
@@ -91,8 +99,16 @@ class Config(BaseConfig):
     output_dir: Path = Path("./output")
     """Where checkpoints and logs are written"""
 
-    model: ModelConfig = ModelConfig()
+    student: StudentConfig = StudentConfig()
     data: DataConfig = DataConfig()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_model_to_student(cls, data: dict) -> dict:
+        """Legacy support: remap ``model.*`` → ``student.model.*``."""
+        if isinstance(data, dict) and "model" in data and "student" not in data:
+            data["student"] = {"model": data.pop("model")}
+        return data
 
     optimizer: OptimizerConfig = AdamWConfig()
 
