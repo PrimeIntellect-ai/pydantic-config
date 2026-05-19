@@ -175,9 +175,19 @@ class ConfigFileError(Exception):
         self.message = message
 
 
+def _term_width() -> int:
+    """Width to render boxes at — the actual terminal width, with a floor of 40.
+
+    No upper cap: by default the error / help panels render full-screen so the
+    box draws look like a coherent UI element rather than an 80-column island
+    in a wide terminal.
+    """
+    return max(40, shutil.get_terminal_size().columns)
+
+
 def _print_config_error_and_exit(error: ConfigFileError) -> None:
     """Print a config file error in a nice box format and exit."""
-    width = min(80, max(40, shutil.get_terminal_size().columns))
+    width = _term_width()
     inner_width = width - 4  # Account for "│ " and " │"
 
     # Box drawing characters
@@ -568,16 +578,18 @@ def _render_panel(title: str, rows: list[tuple[str, str]], term_width: int) -> l
     ``rows`` is a list of ``(flag_with_metavar, default_annotation)`` pairs.
     Empty ``rows`` returns an empty list (caller should suppress the panel).
 
-    The box auto-sizes to the wider of (longest row, title) but never exceeds
-    ``term_width``. Long lines are truncated with an ellipsis.
+    The panel spans the full ``term_width`` so successive panels line up
+    vertically and the help output reads as a coherent UI. If a body line is
+    wider than the terminal, the panel grows to fit it (and the long row is
+    truncated with an ellipsis if it still overflows the safety margin).
     """
     if not rows:
         return []
 
     flag_w = max(len(f) for f, _ in rows)
     body_lines = [f"{f:<{flag_w}}  {n}".rstrip() for f, n in rows]
-    inner = max(max(len(line) for line in body_lines), len(title) + 2)
-    box_total = min(max(inner + 4, len(title) + 6), max(40, term_width))
+    content_width = max(max(len(line) for line in body_lines), len(title) + 2)
+    box_total = max(term_width, content_width + 4, len(title) + 6)
     inner = box_total - 4
 
     horiz = "─" * max(1, box_total - len(title) - 5)
@@ -682,7 +694,7 @@ def _render_help(cls: type, prog: str | None = None, description: str | None = N
     box-drawing style.
     """
     prog = prog or os.path.basename(sys.argv[0])
-    term_width = min(80, max(40, shutil.get_terminal_size().columns))
+    term_width = _term_width()
 
     root_rows, sub_panels = _collect_help_panels(cls, term_width)
 

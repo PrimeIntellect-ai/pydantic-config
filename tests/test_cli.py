@@ -1434,6 +1434,55 @@ def test_cli_validation_error_box_right_border_aligns_with_color(capsys, monkeyp
     )
 
 
+def test_cli_help_panels_span_terminal_width(capsys, monkeypatch):
+    """Help panels should fill the terminal width by default, not cap at 80
+    columns, so successive panels line up vertically as one coherent UI."""
+
+    class Sub(BaseConfig):
+        lr: float = 1e-4
+
+    class C(BaseConfig):
+        seed: int = 42
+        sub: Sub = Sub()
+
+    monkeypatch.setenv("COLUMNS", "120")
+    monkeypatch.setattr("sys.argv", ["demo"])
+    with pytest.raises(SystemExit):
+        cli(C, args=["--help"])
+    out = capsys.readouterr().out
+
+    panel_widths = {
+        len(line) for line in out.splitlines() if line.startswith(("╭", "│", "╰"))
+    }
+    assert len(panel_widths) == 1, (
+        f"Help panels rendered at different widths: {sorted(panel_widths)}\n{out}"
+    )
+    (only_width,) = panel_widths
+    assert only_width == 120, f"expected 120-column panels, got {only_width}"
+
+
+def test_cli_error_box_spans_terminal_width(capsys, monkeypatch):
+    """The validation error box should also fill the terminal width."""
+    import re
+
+    class C(BaseConfig):
+        foo: int = 0
+
+    monkeypatch.setenv("COLUMNS", "120")
+    monkeypatch.setattr("sys.argv", ["demo", "--foo", "dskfj"])
+    with pytest.raises(SystemExit):
+        cli(C)
+    err = capsys.readouterr().err
+
+    ansi = re.compile(r"\x1b\[[0-9;]*m")
+    box_widths = {
+        len(ansi.sub("", line))
+        for line in err.splitlines()
+        if any(line.lstrip("\x1b[0123456789;m").startswith(c) for c in ("╭", "│", "╰"))
+    }
+    assert box_widths == {120}, f"Error box widths: {sorted(box_widths)}\n{err}"
+
+
 def test_cli_validation_error_snake_case_loc_renders_as_kebab():
     """Pydantic error locs use snake_case attribute names; we should kebab-case
     them when rendering as CLI flags."""
