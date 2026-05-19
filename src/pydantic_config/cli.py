@@ -23,8 +23,10 @@ Supports loading config files with @ syntax:
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -490,6 +492,33 @@ def _set_path_to_none(obj: BaseModel, path: str) -> None:
     setattr(target, parts[-1], None)
 
 
+def _annotate_optional_panel_titles(text: str, optional_paths: list[str]) -> str:
+    """Inject "(optional, default: None)" into tyro panel titles for the given paths.
+
+    Tyro renders ``╭─ wandb options ───╮`` for each top-level group; this rewrites
+    those titles so the help itself communicates which fields default to None.
+    The line width is preserved by trimming the trailing dashes.
+    """
+    if not optional_paths:
+        return text
+    marker = "(optional, default: None)"
+    lines = text.split("\n")
+    for path in optional_paths:
+        prefix = f"╭─ {path} options "
+        for i, line in enumerate(lines):
+            if not line.startswith(prefix) or not line.endswith("╮"):
+                continue
+            original_width = len(line)
+            new_title = f"{prefix}{marker} "
+            dashes = original_width - len(new_title) - 1
+            if dashes < 1:
+                lines[i] = f"{new_title}─╮"
+            else:
+                lines[i] = f"{new_title}{'─' * dashes}╮"
+            break
+    return "\n".join(lines)
+
+
 _JSON_VALUE_TYPES = (dict, list)
 
 
@@ -769,6 +798,22 @@ def cli(
         # types (e.g. discriminated unions, Optional[BaseModel]). This avoids
         # tyro errors on dict[str, Any] fields in non-default union variants
         # and keeps CLI usage simple — variant selection belongs in config files.
+        wants_help = "--help" in remaining_args or "-h" in remaining_args
+        if wants_help and inactive_optional_paths:
+            buf = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(buf):
+                    tyro.cli(
+                        tyro.conf.AvoidSubcommands[cls],
+                        args=remaining_args,
+                        default=final_default,
+                        prog=prog,
+                        description=description,
+                    )
+            except SystemExit:
+                sys.stdout.write(_annotate_optional_panel_titles(buf.getvalue(), inactive_optional_paths))
+                raise
+
         result = tyro.cli(
             tyro.conf.AvoidSubcommands[cls],
             args=remaining_args,
