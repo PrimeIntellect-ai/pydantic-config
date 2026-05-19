@@ -17,13 +17,16 @@ Supports loading config files with @ syntax:
 
 from __future__ import annotations
 
+import ast
 import copy
 import importlib.util
+import inspect
 import json
 import os
 import re
 import shutil
 import sys
+import textwrap
 import types
 import typing
 from typing import Any, Literal, TypeVar, Union, get_args, get_origin, overload
@@ -595,7 +598,45 @@ def _format_default_for_help(default: Any) -> str:
     return f"(default: {default})"
 
 
-def _format_field_note(finfo) -> str:
+def _extract_field_docstrings(cls: type) -> dict[str, str]:
+    """Extract PEP 224-style attribute docstrings from ``cls``.
+
+    A string literal immediately following an annotated assignment is treated
+    as that field's description::
+
+        class Config(BaseConfig):
+            seed: int = 42
+            \"\"\"Random seed for reproducibility.\"\"\"
+
+    Returns a ``{field_name: docstring}`` dict. Fields without a trailing
+    string literal are absent from the result.
+    """
+    try:
+        source = textwrap.dedent(inspect.getsource(cls))
+        tree = ast.parse(source)
+    except (OSError, TypeError, SyntaxError):
+        return {}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == cls.__name__:
+            break
+    else:
+        return {}
+
+    result: dict[str, str] = {}
+    body = node.body
+    for i, stmt in enumerate(body):
+        if not isinstance(stmt, ast.AnnAssign) or not isinstance(stmt.target, ast.Name):
+            continue
+        if i + 1 >= len(body):
+            continue
+        nxt = body[i + 1]
+        if isinstance(nxt, ast.Expr) and isinstance(nxt.value, ast.Constant) and isinstance(nxt.value.value, str):
+            result[stmt.target.id] = nxt.value.value.strip()
+    return result
+
+
+def _format_field_note(finfo, docstring: str = "") -> str:
     """Combine ``Field(description=...)`` with the default annotation into the
     trailing column shown next to a flag in ``--help``.
 
@@ -603,28 +644,28 @@ def _format_field_note(finfo) -> str:
     present; if either is empty it's just the other. Returns an empty string
     for required fields with no description (the flag itself is enough).
     """
-    description = (finfo.description or "").strip()
+    description = (finfo.description or docstring or "").strip()
     default = _format_default_for_help(finfo.default)
     if description and default:
         return f"{description}  {default}"
     return description or default
 
 
-def _render_panel(title: str, rows: list[tuple[str, str]], term_width: int) -> list[str]:
+def _render_panel(
+    title: str, rows: list[tuple[str, str]], term_width: int, min_flag_w: int = 0
+) -> list[str]:
     """Render a box-drawn help panel.
 
-    ``rows`` is a list of ``(flag_with_metavar, default_annotation)`` pairs.
+    ``rows`` is a list of ``(flag_with_metavar, annotation)`` pairs.
     Empty ``rows`` returns an empty list (caller should suppress the panel).
 
-    The panel spans the full ``term_width`` so successive panels line up
-    vertically and the help output reads as a coherent UI. If a body line is
-    wider than the terminal, the panel grows to fit it (and the long row is
-    truncated with an ellipsis if it still overflows the safety margin).
+    ``min_flag_w`` sets a minimum width for the flag column so descriptions
+    start at the same column across panels.
     """
     if not rows:
         return []
 
-    flag_w = max(len(f) for f, _ in rows)
+    flag_w = max(min_flag_w, max(len(f) for f, _ in rows))
     body_lines = [f"{f:<{flag_w}}  {n}".rstrip() for f, n in rows]
     content_width = max(max(len(line) for line in body_lines), len(title) + 2)
     box_total = max(term_width, content_width + 4, len(title) + 6)
@@ -637,18 +678,6 @@ def _render_panel(title: str, rows: list[tuple[str, str]], term_width: int) -> l
         lines.append(f"│ {truncated:<{inner}} │")
     lines.append(f"╰{'─' * (box_total - 2)}╯")
     return lines
-
-
-def _render_variant_panel(path: str, variant_cls: type, term_width: int) -> list[str]:
-    """Render a help panel listing a union variant's fields."""
-    rows: list[tuple[str, str]] = []
-    for fname, finfo in variant_cls.model_fields.items():
-        type_str = _format_type_for_help(finfo.annotation)
-        flag = f"--{path}.{fname.replace('_', '-')}"
-        if type_str:
-            flag = f"{flag} {type_str}"
-        rows.append((flag, _format_field_note(finfo)))
-    return _render_panel(f"{path} variant: {variant_cls.__name__}", rows, term_width)
 
 
 def _strip_annotated(annotation):
@@ -664,19 +693,22 @@ def _is_union(annotation) -> bool:
     return origin is Union or origin is getattr(types, "UnionType", None)
 
 
-def _collect_help_panels(
-    cls: type, term_width: int, prefix: str = ""
-) -> tuple[list[tuple[str, str]], list[str]]:
-    """Walk ``cls.model_fields`` to collect help rows and sub-panel lines.
+_HelpPanel = tuple[str, list[tuple[str, str]]]
 
-    Returns ``(rows, panel_lines)`` where ``rows`` is the list of leaf
-    ``(flag, default_annotation)`` pairs to emit in the *current* panel and
-    ``panel_lines`` is a flat list of lines (panels separated by blank lines)
-    for every sub-config / Optional[BaseModel] / multi-model union field
-    discovered below this point.
+
+def _collect_help_panels(
+    cls: type, prefix: str = ""
+) -> tuple[list[tuple[str, str]], list[_HelpPanel]]:
+    """Walk ``cls.model_fields`` to collect help rows and sub-panel specs.
+
+    Returns ``(rows, sub_panels)`` where ``rows`` is the list of leaf
+    ``(flag, annotation)`` pairs to emit in the *current* panel and
+    ``sub_panels`` is a list of ``(title, rows)`` tuples for every
+    sub-config / Optional[BaseModel] / multi-model union variant.
     """
     rows: list[tuple[str, str]] = []
-    panel_lines: list[str] = []
+    sub_panels: list[_HelpPanel] = []
+    docstrings = _extract_field_docstrings(cls)
 
     for fname, finfo in cls.model_fields.items():
         kebab = fname.replace("_", "-")
@@ -687,28 +719,31 @@ def _collect_help_panels(
             inner = _strip_annotated(annotation)
             variants = [a for a in get_args(inner) if a is not type(None)]
             for variant_cls in variants:
-                panel_lines.extend(_render_variant_panel(full_path, variant_cls, term_width))
-                panel_lines.append("")
+                variant_docstrings = _extract_field_docstrings(variant_cls)
+                vrows: list[tuple[str, str]] = []
+                for vfname, vfinfo in variant_cls.model_fields.items():
+                    type_str = _format_type_for_help(vfinfo.annotation)
+                    flag = f"--{full_path}.{vfname.replace('_', '-')}"
+                    if type_str:
+                        flag = f"{flag} {type_str}"
+                    vrows.append((flag, _format_field_note(vfinfo, variant_docstrings.get(vfname, ""))))
+                sub_panels.append((f"{full_path} variant: {variant_cls.__name__}", vrows))
             continue
 
         if _is_optional_model(annotation):
             inner = _strip_annotated(annotation)
             non_none = [a for a in get_args(inner) if a is not type(None)]
             inner_cls = non_none[0]
-            sub_rows, sub_panels = _collect_help_panels(inner_cls, term_width, prefix=full_path)
-            panel_lines.extend(
-                _render_panel(f"{full_path} options (optional, default: None)", sub_rows, term_width)
-            )
-            panel_lines.append("")
-            panel_lines.extend(sub_panels)
+            child_rows, child_panels = _collect_help_panels(inner_cls, prefix=full_path)
+            sub_panels.append((f"{full_path} options (optional, default: None)", child_rows))
+            sub_panels.extend(child_panels)
             continue
 
         inner = _strip_annotated(annotation)
         if isinstance(inner, type) and issubclass(inner, BaseModel):
-            sub_rows, sub_panels = _collect_help_panels(inner, term_width, prefix=full_path)
-            panel_lines.extend(_render_panel(f"{full_path} options", sub_rows, term_width))
-            panel_lines.append("")
-            panel_lines.extend(sub_panels)
+            child_rows, child_panels = _collect_help_panels(inner, prefix=full_path)
+            sub_panels.append((f"{full_path} options", child_rows))
+            sub_panels.extend(child_panels)
             continue
 
         # Leaf field.
@@ -716,9 +751,9 @@ def _collect_help_panels(
         flag = f"--{full_path}"
         if type_str:
             flag = f"{flag} {type_str}"
-        rows.append((flag, _format_field_note(finfo)))
+        rows.append((flag, _format_field_note(finfo, docstrings.get(fname, ""))))
 
-    return rows, panel_lines
+    return rows, sub_panels
 
 
 def _render_help(
@@ -736,7 +771,17 @@ def _render_help(
     prog = prog or os.path.basename(sys.argv[0])
     term_width = _term_width(wide)
 
-    root_rows, sub_panels = _collect_help_panels(cls, term_width)
+    root_rows, sub_panels = _collect_help_panels(cls)
+
+    header_rows = [("-h, --help", "show this help message and exit"), *root_rows]
+    all_panels: list[_HelpPanel] = [("options", header_rows), *sub_panels]
+
+    # Compute a global flag column width so descriptions start at the same
+    # column across every panel.
+    global_flag_w = max(
+        (len(flag) for _, rows in all_panels for flag, _ in rows),
+        default=0,
+    )
 
     lines: list[str] = [f"usage: {prog} [-h] [@ FILE] [OPTIONS]"]
     if description:
@@ -745,10 +790,9 @@ def _render_help(
             lines.append(paragraph)
     lines.append("")
 
-    header_rows = [("-h, --help", "show this help message and exit"), *root_rows]
-    lines.extend(_render_panel("options", header_rows, term_width))
-    lines.append("")
-    lines.extend(sub_panels)
+    for title, rows in all_panels:
+        lines.extend(_render_panel(title, rows, term_width, min_flag_w=global_flag_w))
+        lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
 
