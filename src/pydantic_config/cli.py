@@ -1,11 +1,5 @@
 """
-CLI with TOML/YAML/JSON config file support.
-
-Drop-in replacement for tyro.cli with config file support:
-    # Instead of:
-    from tyro import cli
-    # Use:
-    from pydantic_config import cli
+Pydantic-driven CLI with TOML / YAML / JSON config file support.
 
 Usage:
     from pydantic_config import cli, BaseConfig
@@ -23,10 +17,8 @@ Supports loading config files with @ syntax:
 
 from __future__ import annotations
 
-import contextlib
 import copy
 import importlib.util
-import io
 import json
 import os
 import shutil
@@ -35,7 +27,6 @@ import types
 import typing
 from typing import Any, Literal, TypeVar, Union, get_args, get_origin, overload
 
-import tyro
 from pydantic import BaseModel, ConfigDict, model_validator
 
 T = TypeVar("T")
