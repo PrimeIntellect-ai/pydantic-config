@@ -1374,6 +1374,51 @@ def test_cli_validation_alias_accepts_alias_name():
     assert config.inner.value == 5
 
 
+def test_cli_validation_error_surfaces_as_configfileerror_with_flag_name():
+    """When pydantic rejects a value, the user should see ``--foo: <msg>`` —
+    not a raw ``pydantic_core.ValidationError`` traceback."""
+
+    class C(BaseConfig):
+        foo: int = 0
+
+    with pytest.raises(ConfigFileError) as exc_info:
+        cli(C, args=["--foo", "dskfj"])
+    msg = str(exc_info.value)
+    assert "--foo" in msg
+    assert "integer" in msg
+    assert "dskfj" in msg
+
+
+def test_cli_validation_error_nested_field_renders_dotted_flag():
+    """Nested pydantic errors should render as ``--sub.field`` so the user
+    can see exactly which CLI flag to fix."""
+
+    class Sub(BaseConfig):
+        count: int = 0
+
+    class C(BaseConfig):
+        sub: Sub = Sub()
+
+    with pytest.raises(ConfigFileError) as exc_info:
+        cli(C, args=["--sub.count", "nope"])
+    msg = str(exc_info.value)
+    assert "--sub.count" in msg
+    assert "integer" in msg
+
+
+def test_cli_validation_error_snake_case_loc_renders_as_kebab():
+    """Pydantic error locs use snake_case attribute names; we should kebab-case
+    them when rendering as CLI flags."""
+
+    class C(BaseConfig):
+        my_int_field: int = 0
+
+    with pytest.raises(ConfigFileError) as exc_info:
+        cli(C, args=["--my-int-field", "nope"])
+    msg = str(exc_info.value)
+    assert "--my-int-field" in msg
+
+
 # Tests: _parse_cli_to_dict — direct unit tests of the new argv parser.
 
 

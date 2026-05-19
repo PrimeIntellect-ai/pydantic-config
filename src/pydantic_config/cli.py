@@ -27,7 +27,7 @@ import types
 import typing
 from typing import Any, Literal, TypeVar, Union, get_args, get_origin, overload
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 T = TypeVar("T")
 
@@ -249,6 +249,53 @@ def _print_config_error_and_exit(error: ConfigFileError) -> None:
         print(line, file=sys.stderr)
 
     sys.exit(1)
+
+
+def _loc_to_cli_flag(loc: tuple) -> str:
+    """Convert a Pydantic error ``loc`` tuple to the matching CLI flag form.
+
+    ``("trainer", "model", "seq_len")`` → ``--trainer.model.seq-len``.
+    List indices and any non-str segments are appended in ``[i]`` notation
+    so users can still locate them, e.g. ``("items", 0)`` → ``--items[0]``.
+    """
+    if not loc:
+        return "<root>"
+    parts: list[str] = []
+    for segment in loc:
+        if isinstance(segment, int):
+            if parts:
+                parts[-1] = f"{parts[-1]}[{segment}]"
+            else:
+                parts.append(f"[{segment}]")
+        else:
+            parts.append(str(segment).replace("_", "-"))
+    return "--" + ".".join(parts)
+
+
+def _format_validation_error_for_cli(error: ValidationError) -> str:
+    """Render a ``pydantic.ValidationError`` as a CLI-flag-flavoured multi-line
+    message suitable for ``_print_config_error_and_exit``.
+
+    Each Pydantic error becomes one row of the form
+    ``<cli-flag>: <msg> (got <input>)``. The input is omitted when it's a
+    container (dict / list), since the per-leaf errors that follow show the
+    real culprit.
+    """
+    errors = error.errors()
+    count = len(errors)
+    header = f"Failed to validate config: {count} validation error{'s' if count != 1 else ''} for {error.title}"
+    lines: list[str] = [header]
+    for err in errors:
+        loc = err.get("loc", ())
+        flag = _loc_to_cli_flag(tuple(loc))
+        msg = err.get("msg") or err.get("type", "validation error")
+        input_value = err.get("input")
+        suffix = ""
+        if input_value is not None and not isinstance(input_value, (dict, list)):
+            suffix = f" (got {input_value!r})"
+        lines.append(flag)
+        lines.append(f"  {msg}{suffix}")
+    return "\n".join(lines)
 
 
 def _load_config_file(path: str) -> dict:
@@ -1117,7 +1164,13 @@ def cli(
         if default is not None and isinstance(default, BaseModel):
             default_dict = default.model_dump(exclude_unset=True)
         merged = _deep_merge(_deep_merge(default_dict, toml_dict), cli_overrides)
-        return cls.model_validate(merged)
+        try:
+            return cls.model_validate(merged)
+        except ValidationError as e:
+            # Surface pydantic errors with CLI-flag-flavoured wording so users
+            # see ``--foo: Input should be a valid integer (got 'dskfj')`` rather
+            # than a raw pydantic_core traceback.
+            raise ConfigFileError(_format_validation_error_for_cli(e)) from e
     except ConfigFileError as e:
         # Only print formatted error when running from CLI (sys.argv);
         # when args are explicitly passed, re-raise for programmatic handling.
