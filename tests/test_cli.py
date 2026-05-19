@@ -1,8 +1,10 @@
 """Tests for the cli module."""
 
 import os
+from typing import Annotated
 
 import pytest
+from pydantic import Field
 
 from pydantic_config import cli, BaseConfig, ConfigFileError
 from pydantic_config.cli import (
@@ -1251,3 +1253,122 @@ def test_dict_coercion_leading_zeros_stay_string():
     config = Config.model_validate({"args": {"code": "007"}})
     assert config.args["code"] == "007"
     assert isinstance(config.args["code"], str)
+
+
+# Tests: parity contract — these must pass before AND after the tyro→custom
+# parser swap. They lock down the behaviour we'd otherwise rely on tyro for.
+
+
+def test_cli_equals_form_value():
+    """``--field=value`` should work identically to ``--field value``."""
+    config = cli(SimpleConfig, args=["--name=hello", "--count=7"])
+    assert config.name == "hello"
+    assert config.count == 7
+
+
+def test_cli_no_prefix_disables_bool():
+    """``--no-flag`` should disable a bool field even when its default is True."""
+
+    class C(BaseConfig):
+        enabled: bool = True
+
+    config = cli(C, args=["--no-enabled"])
+    assert config.enabled is False
+
+
+def test_cli_bare_bool_flag_true():
+    """``--enabled`` with no value should set a bool field to True (default False)."""
+
+    class C(BaseConfig):
+        enabled: bool = False
+
+    config = cli(C, args=["--enabled"])
+    assert config.enabled is True
+
+
+def test_cli_unknown_flag_errors_cleanly():
+    """An unknown ``--flag`` should raise a clear error, not crash with a traceback."""
+    with pytest.raises((SystemExit, ConfigFileError, ValueError, Exception)):
+        cli(SimpleConfig, args=["--this-flag-does-not-exist", "x"])
+
+
+def test_cli_help_contains_usage(capsys):
+    """``--help`` output should always include the usage line."""
+    with pytest.raises(SystemExit):
+        cli(SimpleConfig, args=["--help"])
+    out = capsys.readouterr().out
+    assert "usage" in out.lower()
+
+
+def test_cli_help_contains_known_flags(capsys):
+    """``--help`` output should list each field as ``--field`` somewhere."""
+    with pytest.raises(SystemExit):
+        cli(SimpleConfig, args=["--help"])
+    out = capsys.readouterr().out
+    assert "--name" in out
+    assert "--count" in out
+
+
+def test_cli_help_renders_list_default(capsys):
+    """``--help`` should render a list field cleanly (no <function ...> leak)."""
+
+    class C(BaseConfig):
+        items: list[int] = []
+
+    with pytest.raises(SystemExit):
+        cli(C, args=["--help"])
+    out = capsys.readouterr().out
+    assert "--items" in out
+    assert "<function" not in out, "default_factory should not leak as <function ...>"
+
+
+def test_cli_help_with_default_factory_renders_cleanly(capsys):
+    """A field with ``default_factory=list`` should not render as ``<function list>``."""
+
+    class C(BaseConfig):
+        items: list = Field(default_factory=list)
+
+    with pytest.raises(SystemExit):
+        cli(C, args=["--help"])
+    out = capsys.readouterr().out
+    assert "--items" in out
+    assert "<function" not in out
+
+
+def test_cli_help_exits_zero(capsys):
+    """``--help`` should exit with status 0, not a non-zero code."""
+    with pytest.raises(SystemExit) as exc_info:
+        cli(SimpleConfig, args=["--help"])
+    capsys.readouterr()  # drain
+    assert exc_info.value.code in (0, None), f"--help exited with code {exc_info.value.code!r}"
+
+
+def test_cli_negative_number_value_parses():
+    """A negative-number value (e.g. ``--lr -1e-3``) should not be misread as a flag."""
+
+    class C(BaseConfig):
+        lr: float = 0.0
+
+    config = cli(C, args=["--lr", "-1e-3"])
+    assert config.lr == -1e-3
+
+
+def test_cli_validation_alias_accepts_alias_name():
+    """A field with ``Field(validation_alias=AliasChoices(...))`` should accept
+    its alias on the CLI. tyro's mirror inherited the alias via create_model;
+    the new parser must add alias names to its valid-paths set."""
+    from pydantic import AliasChoices
+
+    class Inner(BaseConfig):
+        value: int = 0
+
+    class Outer(BaseConfig):
+        # Both 'inner' and 'student' point at the same field.
+        inner: Annotated[
+            Inner,
+            Field(validation_alias=AliasChoices("inner", "student")),
+        ] = Inner()
+
+    # Canonical name works.
+    config = cli(Outer, args=["--inner.value", "5"])
+    assert config.inner.value == 5
