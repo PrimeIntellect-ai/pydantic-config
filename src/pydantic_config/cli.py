@@ -307,13 +307,6 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
-def _dict_to_instance(cls: type[T], data: dict) -> T:
-    """Convert a dictionary to an instance of a Pydantic model."""
-    if isinstance(cls, type) and issubclass(cls, BaseModel):
-        return cls.model_validate(data)
-    raise TypeError(f"Cannot convert dict to {cls}: not a Pydantic BaseModel")
-
-
 def _process_args(args: list[str]) -> tuple[list[str], dict, dict[str, dict]]:
     """
     Process command line args to extract config file references.
@@ -789,20 +782,6 @@ def _expand_bare_optional_flags(
     return remaining, overrides
 
 
-def _build_default_from_config(cls: type[T], config: dict, config_path: str | None = None) -> T | None:
-    """Build a default instance from config dict for tyro.
-
-    Raises ConfigFileError if the config cannot be validated against the model.
-    """
-    if not config:
-        return None
-    try:
-        return _dict_to_instance(cls, config)
-    except Exception as e:
-        source = f" from '{config_path}'" if config_path else ""
-        raise ConfigFileError(f"Failed to validate config{source}: {e}") from e
-
-
 def _annotation_is_bool(annotation) -> bool:
     """``True`` if ``annotation`` is ``bool``, ``Optional[bool]``, etc."""
     inner = _strip_annotated(annotation)
@@ -1100,63 +1079,57 @@ def cli(
         args = sys.argv[1:]
 
     try:
-        # Process args to extract config files
+        # 1. Parse ``@ file.toml`` references into a raw TOML/JSON/YAML dict.
         remaining_args, root_config, nested_configs = _process_args(args)
-
-        # Merge all configs: root first, then nested configs
-        merged_config = root_config
+        toml_dict = root_config
         for key_path, config in nested_configs.items():
             nested = _nest_config(key_path, config)
-            merged_config = _deep_merge(merged_config, nested)
+            toml_dict = _deep_merge(toml_dict, nested)
 
-        # Expand bare flags for Optional[BaseModel] fields (e.g. --model.compile)
+        # 2. Pre-extract CLI args that can't be matched by leaf path lookup —
+        #    Optional[BaseModel] / discriminated-union sub-flags, and JSON-encoded
+        #    list/dict values. These end up in ``cli_overrides`` as raw strings
+        #    (or already-parsed JSON), to be deep-merged with TOML at the end.
+        cli_overrides: dict = {}
         optional_paths = _find_optional_model_paths(cls)
         if optional_paths:
             remaining_args, bare_overrides = _expand_bare_optional_flags(remaining_args, optional_paths)
-            if bare_overrides:
-                merged_config = _deep_merge(merged_config, bare_overrides)
+            cli_overrides = _deep_merge(cli_overrides, bare_overrides)
 
-        # Extract JSON-encoded values for dict/list fields
-        # (e.g. --extra-kwargs '{"key": 123}', --env-ratios '[0.7, 0.3]')
         json_paths = _find_json_value_field_paths(cls)
         if json_paths:
             remaining_args, json_overrides = _extract_json_value_args(remaining_args, json_paths)
-            if json_overrides:
-                merged_config = _deep_merge(merged_config, json_overrides)
+            cli_overrides = _deep_merge(cli_overrides, json_overrides)
 
-        # Build default from merged config
-        config_default = None
-        if merged_config:
-            config_default = _build_default_from_config(cls, merged_config, config_path="merged config")
-
-        # Merge with provided default
-        final_default = default
-        if config_default is not None:
-            final_default = config_default
-
-        # --help is rendered entirely from ``cls.model_fields`` — no tyro round-trip,
-        # no fabricated Optional[BaseModel] placeholders. ``_render_help`` already
-        # surfaces sub-fields of unset Optional[BaseModel] with the
-        # ``(optional, default: None)`` annotation in the panel title.
+        # 3. --help is rendered from ``cls.model_fields``, no tyro round-trip.
         if "--help" in remaining_args or "-h" in remaining_args:
             sys.stdout.write(_render_help(cls, prog=prog, description=description))
             sys.exit(0)
 
-        # Call tyro with processed args.
-        # AvoidSubcommands prevents tyro from creating subcommands for union
-        # types (e.g. discriminated unions, Optional[BaseModel]). This avoids
-        # tyro errors on dict[str, Any] fields in non-default union variants
-        # and keeps CLI usage simple — variant selection belongs in config files.
-        return tyro.cli(
-            tyro.conf.AvoidSubcommands[cls],
-            args=remaining_args,
-            default=final_default,
-            prog=prog,
-            description=description,
-        )
+        # 4. Parse remaining ``--flag value`` / ``--flag=value`` tokens against the
+        #    leaf paths of ``cls``. The parser handles bools (``--no-flag``), typed
+        #    lists, aliases, and emits a ``ConfigFileError`` with suggestions on
+        #    unknown flags.
+        remaining_args, flag_overrides = _parse_cli_to_dict(remaining_args, cls, optional_paths)
+        cli_overrides = _deep_merge(cli_overrides, flag_overrides)
+
+        if remaining_args:
+            raise ConfigFileError(
+                f"Unrecognized arguments: {' '.join(remaining_args)}"
+            )
+
+        # 5. Compose the precedence layers and validate once. Order:
+        #    caller default  ⊂  TOML/@-file  ⊂  CLI overrides.
+        #    Validators on ``cls`` fire exactly once on the merged dict, so
+        #    ``model_fields_set`` faithfully records what the user wrote.
+        default_dict: dict = {}
+        if default is not None and isinstance(default, BaseModel):
+            default_dict = default.model_dump(exclude_unset=True)
+        merged = _deep_merge(_deep_merge(default_dict, toml_dict), cli_overrides)
+        return cls.model_validate(merged)
     except ConfigFileError as e:
-        # Only print formatted error when running from CLI (sys.argv)
-        # When args are explicitly passed, re-raise for programmatic handling
+        # Only print formatted error when running from CLI (sys.argv);
+        # when args are explicitly passed, re-raise for programmatic handling.
         if use_sys_argv:
             _print_config_error_and_exit(e)
         raise
