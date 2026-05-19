@@ -14,7 +14,7 @@ from pathlib import Path
 from pprint import pprint
 from typing import Annotated, Literal
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 
 from pydantic_config import cli, BaseConfig
 
@@ -34,18 +34,15 @@ class WandbConfig(BaseConfig):
 
 class AdamWConfig(BaseConfig):
     type: Literal["adamw"] = "adamw"
-    lr: float = 3e-4
-    """Peak learning rate"""
-    weight_decay: float = 0.01
-    """L2 weight-decay coefficient"""
+    lr: float = Field(3e-4, gt=0, description="Peak learning rate")
+    weight_decay: float = Field(0.01, ge=0, description="L2 weight-decay coefficient")
     betas: list[float] = [0.9, 0.95]
     """Adam (beta1, beta2) moments"""
 
 
 class MuonConfig(BaseConfig):
     type: Literal["muon"] = "muon"
-    lr: float = 2e-3
-    """Peak learning rate"""
+    lr: float = Field(2e-3, gt=0, description="Peak learning rate")
     momentum: float = 0.95
     """Newton-Schulz momentum"""
 
@@ -58,8 +55,7 @@ class DataConfig(BaseConfig):
 
     path: Path = Path("./data")
     """Path to the dataset directory"""
-    num_workers: int = 4
-    """DataLoader worker processes"""
+    num_workers: int = Field(4, ge=0, description="DataLoader worker processes")
     shuffle: bool = True
     """Shuffle the training set each epoch"""
 
@@ -76,10 +72,16 @@ class CompileConfig(BaseConfig):
 class ModelConfig(BaseConfig):
     name: str = "qwen-1b"
     """Checkpoint name or HuggingFace ID"""
-    hidden_size: int = 2048
-    """Transformer hidden dimension"""
-    num_layers: int = 24
-    """Number of transformer blocks"""
+    hidden_size: int = Field(2048, gt=0, description="Transformer hidden dimension")
+    num_layers: int = Field(32, gt=0, description="Number of transformer blocks")
+
+    @model_validator(mode="after")
+    def _check_hidden_divisible_by_layers(self):
+        if self.hidden_size % self.num_layers != 0:
+            raise ValueError(
+                f"hidden_size ({self.hidden_size}) must be divisible by num_layers ({self.num_layers})"
+            )
+        return self
 
 
 class StudentConfig(BaseConfig):
@@ -121,6 +123,13 @@ class Config(BaseConfig):
     """Steps at which to save a checkpoint"""
     extra_kwargs: dict = {}
     """Arbitrary extra config passed to the trainer"""
+
+    @field_validator("checkpoint_steps")
+    @classmethod
+    def _steps_must_be_sorted(cls, v: list[int]) -> list[int]:
+        if v != sorted(v):
+            raise ValueError(f"checkpoint_steps must be in ascending order, got {v}")
+        return v
 
 
 def main(config: Config):

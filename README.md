@@ -260,6 +260,44 @@ uv run python examples/train.py --no-wide --help              # panels capped at
 PYDANTIC_CONFIG_PLAIN=1 uv run python examples/train.py       # env var
 ```
 
+### Pydantic validators
+
+Built-in field constraints (`gt`, `ge`, `lt`, `le`) and custom validators
+(`@field_validator`, `@model_validator(mode="after")`) work as expected.
+Validation errors are rendered with the offending CLI flag.
+
+```python
+class AdamWConfig(BaseConfig):
+    lr: float = Field(3e-4, gt=0)                     # built-in: must be > 0
+
+class ModelConfig(BaseConfig):
+    hidden_size: int = Field(2048, gt=0)
+    num_layers: int = Field(32, gt=0)
+
+    @model_validator(mode="after")                     # custom cross-field check
+    def _check(self):
+        if self.hidden_size % self.num_layers != 0:
+            raise ValueError("hidden_size must be divisible by num_layers")
+        return self
+
+class Config(BaseConfig):
+    checkpoint_steps: list[int] = []
+
+    @field_validator("checkpoint_steps")               # custom field validator
+    @classmethod
+    def _sorted(cls, v):
+        if v != sorted(v):
+            raise ValueError(f"must be in ascending order, got {v}")
+        return v
+```
+
+```bash
+uv run python examples/train.py --run-name r1 --optimizer.lr 0                       # gt=0 rejects zero
+uv run python examples/train.py --run-name r1 --data.num-workers -1                  # ge=0 rejects negative
+uv run python examples/train.py --run-name r1 --model.hidden-size 100 --model.num-layers 7  # after validator
+uv run python examples/train.py --run-name r1 --checkpoint-steps 500 100 200         # field validator
+```
+
 ### Validation errors point at the CLI flag
 
 Pydantic's `ValidationError` is wrapped so the user sees the offending flag

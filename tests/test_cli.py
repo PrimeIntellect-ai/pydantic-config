@@ -1686,3 +1686,341 @@ def test_render_help_returns_string_with_panels():
     assert "data variant: VariantB" in out
     assert "--data.value" in out
     assert "--data.extra-b" in out
+
+
+# ---------------------------------------------------------------------------
+# Disabling optional sub-configs
+# ---------------------------------------------------------------------------
+
+
+def test_disable_optional_with_no_prefix():
+    class Inner(BaseConfig):
+        x: int = 1
+
+    class C(BaseConfig):
+        inner: Inner | None = Inner()
+
+    config = cli(C, args=["--no-inner"])
+    assert config.inner is None
+
+
+def test_disable_optional_with_none_value():
+    class Inner(BaseConfig):
+        x: int = 1
+
+    class C(BaseConfig):
+        inner: Inner | None = Inner()
+
+    config = cli(C, args=["--inner", "None"])
+    assert config.inner is None
+
+
+def test_disable_optional_none_in_toml(tmp_path):
+    f = tmp_path / "c.toml"
+    f.write_text('inner = "None"\n')
+
+    class Inner(BaseConfig):
+        x: int = 1
+
+    class C(BaseConfig):
+        inner: Inner | None = Inner()
+
+    config = cli(C, args=["@", str(f)])
+    assert config.inner is None
+
+
+# ---------------------------------------------------------------------------
+# Validation alias — mixed TOML + CLI
+# ---------------------------------------------------------------------------
+
+
+def test_alias_toml_canonical_cli_alias():
+    from pydantic import AliasChoices
+
+    class C(BaseConfig):
+        seed: int = Field(0, validation_alias=AliasChoices("seed", "random_seed"))
+
+    config = cli(C, args=["--random-seed", "7"])
+    assert config.seed == 7
+
+
+def test_alias_toml_and_cli_mixed(tmp_path):
+    from pydantic import AliasChoices
+
+    f = tmp_path / "c.toml"
+    f.write_text("random_seed = 11\n")
+
+    class C(BaseConfig):
+        seed: int = Field(0, validation_alias=AliasChoices("seed", "random_seed"))
+
+    config = cli(C, args=["@", str(f), "--seed", "99"])
+    assert config.seed == 99
+
+
+# ---------------------------------------------------------------------------
+# Legacy key remapping via before-validator
+# ---------------------------------------------------------------------------
+
+
+def test_before_validator_remaps_legacy_cli_key():
+    from pydantic import model_validator
+
+    class Inner(BaseConfig):
+        name: str = "default"
+
+    class Wrapper(BaseConfig):
+        inner: Inner = Inner()
+
+    class C(BaseConfig):
+        student: Wrapper = Wrapper()
+
+        @model_validator(mode="before")
+        @classmethod
+        def _migrate(cls, data):
+            if isinstance(data, dict) and "model" in data and "student" not in data:
+                data["student"] = {"inner": data.pop("model")}
+            return data
+
+    config = cli(C, args=["--model.name", "from-cli"])
+    assert config.student.inner.name == "from-cli"
+
+
+def test_before_validator_remaps_legacy_toml_key(tmp_path):
+    from pydantic import model_validator
+
+    f = tmp_path / "c.toml"
+    f.write_text('[model]\nname = "from-toml"\n')
+
+    class Inner(BaseConfig):
+        name: str = "default"
+
+    class Wrapper(BaseConfig):
+        inner: Inner = Inner()
+
+    class C(BaseConfig):
+        student: Wrapper = Wrapper()
+
+        @model_validator(mode="before")
+        @classmethod
+        def _migrate(cls, data):
+            if isinstance(data, dict) and "model" in data and "student" not in data:
+                data["student"] = {"inner": data.pop("model")}
+            return data
+
+    config = cli(C, args=["@", str(f)])
+    assert config.student.inner.name == "from-toml"
+
+
+# ---------------------------------------------------------------------------
+# PEP 224 field docstrings in --help
+# ---------------------------------------------------------------------------
+
+
+def test_help_shows_pep224_docstring(capsys):
+    from pydantic_config.cli import _render_help
+
+    class C(BaseConfig):
+        count: int = 0
+        """Number of iterations to run"""
+
+    out = _render_help(C, prog="test")
+    assert "Number of iterations to run" in out
+
+
+def test_help_field_description_overrides_docstring(capsys):
+    from pydantic_config.cli import _render_help
+
+    class C(BaseConfig):
+        count: int = Field(0, description="Explicit description")
+        """Docstring that should be ignored"""
+
+    out = _render_help(C, prog="test")
+    assert "Explicit description" in out
+    assert "should be ignored" not in out
+
+
+# ---------------------------------------------------------------------------
+# Model docstrings in panel titles
+# ---------------------------------------------------------------------------
+
+
+def test_help_shows_class_docstring_in_panel_title():
+    from pydantic_config.cli import _render_help
+
+    class Inner(BaseConfig):
+        """Widget settings."""
+        x: int = 0
+
+    class C(BaseConfig):
+        inner: Inner = Inner()
+
+    out = _render_help(C, prog="test")
+    assert "inner: Widget settings." in out
+
+
+def test_help_field_docstring_overrides_class_docstring():
+    from pydantic_config.cli import _render_help
+
+    class Inner(BaseConfig):
+        """Class doc."""
+        x: int = 0
+
+    class C(BaseConfig):
+        inner: Inner = Inner()
+        """Field-level description"""
+
+    out = _render_help(C, prog="test")
+    assert "inner: Field-level description" in out
+    assert "Class doc" not in out
+
+
+# ---------------------------------------------------------------------------
+# --plain and --no-wide
+# ---------------------------------------------------------------------------
+
+
+def test_plain_accepted_as_kwarg():
+    class C(BaseConfig):
+        x: int = 0
+
+    config = cli(C, args=["--x", "5"], plain=True)
+    assert config.x == 5
+
+
+def test_wide_false_caps_at_80(capsys):
+    from pydantic_config.cli import _render_help
+
+    class C(BaseConfig):
+        x: int = 0
+
+    out = _render_help(C, prog="test", wide=False)
+    for line in out.splitlines():
+        assert len(line) <= 80
+
+
+# ---------------------------------------------------------------------------
+# Pydantic validators (gt, ge, @model_validator, @field_validator)
+# ---------------------------------------------------------------------------
+
+
+def test_field_gt_rejects_boundary():
+    class C(BaseConfig):
+        lr: float = Field(1e-4, gt=0)
+
+    with pytest.raises(ConfigFileError, match="greater than 0"):
+        cli(C, args=["--lr", "0"])
+
+
+def test_field_ge_rejects_below():
+    class C(BaseConfig):
+        workers: int = Field(4, ge=0)
+
+    with pytest.raises(ConfigFileError, match="greater than or equal to 0"):
+        cli(C, args=["--workers", "-1"])
+
+
+def test_field_gt_accepts_valid():
+    class C(BaseConfig):
+        lr: float = Field(1e-4, gt=0)
+
+    config = cli(C, args=["--lr", "0.001"])
+    assert config.lr == 0.001
+
+
+def test_model_validator_after_rejects_invalid():
+    from pydantic import model_validator
+
+    class C(BaseConfig):
+        a: int = 10
+        b: int = 3
+
+        @model_validator(mode="after")
+        def _check(self):
+            if self.a % self.b != 0:
+                raise ValueError(f"a ({self.a}) must be divisible by b ({self.b})")
+            return self
+
+    with pytest.raises(ConfigFileError, match="divisible"):
+        cli(C, args=["--a", "10", "--b", "3"])
+
+
+def test_model_validator_after_accepts_valid():
+    from pydantic import model_validator
+
+    class C(BaseConfig):
+        a: int = 10
+        b: int = 5
+
+        @model_validator(mode="after")
+        def _check(self):
+            if self.a % self.b != 0:
+                raise ValueError(f"a must be divisible by b")
+            return self
+
+    config = cli(C, args=["--a", "10", "--b", "5"])
+    assert config.a == 10
+
+
+def test_field_validator_rejects_invalid():
+    from pydantic import field_validator
+
+    class C(BaseConfig):
+        items: list[int] = []
+
+        @field_validator("items")
+        @classmethod
+        def _sorted(cls, v):
+            if v != sorted(v):
+                raise ValueError(f"must be ascending, got {v}")
+            return v
+
+    with pytest.raises(ConfigFileError, match="ascending"):
+        cli(C, args=["--items", "5", "1", "3"])
+
+
+def test_field_validator_accepts_valid():
+    from pydantic import field_validator
+
+    class C(BaseConfig):
+        items: list[int] = []
+
+        @field_validator("items")
+        @classmethod
+        def _sorted(cls, v):
+            if v != sorted(v):
+                raise ValueError(f"must be ascending")
+            return v
+
+    config = cli(C, args=["--items", "1", "3", "5"])
+    assert config.items == [1, 3, 5]
+
+
+# ---------------------------------------------------------------------------
+# Optional enabled-by-default panel title
+# ---------------------------------------------------------------------------
+
+
+def test_help_optional_enabled_by_default_title():
+    from pydantic_config.cli import _render_help
+
+    class Inner(BaseConfig):
+        x: int = 1
+
+    class C(BaseConfig):
+        inner: Inner | None = Inner()
+
+    out = _render_help(C, prog="test")
+    assert "optional, enabled by default" in out
+
+
+def test_help_optional_none_default_title():
+    from pydantic_config.cli import _render_help
+
+    class Inner(BaseConfig):
+        x: int = 1
+
+    class C(BaseConfig):
+        inner: Inner | None = None
+
+    out = _render_help(C, prog="test")
+    assert "optional, default: None" in out

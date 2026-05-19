@@ -8,7 +8,7 @@ checkpoint_steps = [100, 500, 1000]
 [model]
 name = "qwen-3b"
 hidden_size = 3072
-num_layers = 32
+num_layers = 48
 
 [data]
 path = "./datasets/c4"
