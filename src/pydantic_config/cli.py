@@ -589,7 +589,7 @@ def _format_default_for_help(default: Any) -> str:
     if default is None:
         return "(default: None)"
     if repr(default) == "PydanticUndefined":
-        return ""
+        return "(required)"
     if callable(default):
         try:
             return _format_default_for_help(default())
