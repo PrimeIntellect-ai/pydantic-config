@@ -51,8 +51,13 @@ def _coerce_str_value(v: str) -> bool | int | float | str:
         pass
     try:
         float_val = float(v)
-        if str(float_val) == v:
-            return float_val
+        if not (float_val != float_val) and v not in ("inf", "-inf", "+inf"):  # reject NaN/inf
+            # Guard against coercing strings with leading zeros (e.g. "007")
+            # that aren't valid float literals in the conventional sense.
+            if v[:1].isdigit() and v != str(float_val) and not any(c in v for c in "eE."):
+                pass
+            else:
+                return float_val
     except ValueError:
         pass
     return v
@@ -420,7 +425,7 @@ def _process_args(args: list[str]) -> tuple[list[str], dict, dict[str, dict]]:
     Process command line args to extract config file references.
 
     Returns:
-        - remaining_args: args with config file refs removed (for tyro)
+        - remaining_args: args with config file refs removed
         - root_config: merged config from root-level @ files
         - nested_configs: dict mapping arg names to their loaded configs
 

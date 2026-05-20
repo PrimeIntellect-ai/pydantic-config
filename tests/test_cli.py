@@ -1232,15 +1232,15 @@ def test_dict_coercion_negative_int():
 
 
 def test_dict_coercion_scientific_float():
-    """Scientific notation floats don't round-trip via str(), so they stay as strings."""
+    """Scientific notation floats should be coerced to float."""
     from typing import Any
 
     class Config(BaseConfig):
         args: dict[str, Any] = {}
 
     config = Config.model_validate({"args": {"lr": "1e-4"}})
-    assert config.args["lr"] == "1e-4"
-    assert isinstance(config.args["lr"], str)
+    assert config.args["lr"] == 1e-4
+    assert isinstance(config.args["lr"], float)
 
 
 def test_dict_coercion_leading_zeros_stay_string():
