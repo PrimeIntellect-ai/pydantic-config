@@ -1,8 +1,10 @@
 """Tests for the cli module."""
 
 import os
+from typing import Annotated
 
 import pytest
+from pydantic import Field
 
 from pydantic_config import cli, BaseConfig, ConfigFileError
 from pydantic_config.cli import (
@@ -1230,15 +1232,15 @@ def test_dict_coercion_negative_int():
 
 
 def test_dict_coercion_scientific_float():
-    """Scientific notation floats don't round-trip via str(), so they stay as strings."""
+    """Scientific notation floats should be coerced to float."""
     from typing import Any
 
     class Config(BaseConfig):
         args: dict[str, Any] = {}
 
     config = Config.model_validate({"args": {"lr": "1e-4"}})
-    assert config.args["lr"] == "1e-4"
-    assert isinstance(config.args["lr"], str)
+    assert config.args["lr"] == 1e-4
+    assert isinstance(config.args["lr"], float)
 
 
 def test_dict_coercion_leading_zeros_stay_string():
@@ -1251,3 +1253,1253 @@ def test_dict_coercion_leading_zeros_stay_string():
     config = Config.model_validate({"args": {"code": "007"}})
     assert config.args["code"] == "007"
     assert isinstance(config.args["code"], str)
+
+
+# Tests: parity contract — these must pass before AND after the tyro→custom
+# parser swap. They lock down the behaviour we'd otherwise rely on tyro for.
+
+
+def test_cli_equals_form_value():
+    """``--field=value`` should work identically to ``--field value``."""
+    config = cli(SimpleConfig, args=["--name=hello", "--count=7"])
+    assert config.name == "hello"
+    assert config.count == 7
+
+
+def test_cli_no_prefix_disables_bool():
+    """``--no-flag`` should disable a bool field even when its default is True."""
+
+    class C(BaseConfig):
+        enabled: bool = True
+
+    config = cli(C, args=["--no-enabled"])
+    assert config.enabled is False
+
+
+def test_cli_bare_bool_flag_true():
+    """``--enabled`` with no value should set a bool field to True (default False)."""
+
+    class C(BaseConfig):
+        enabled: bool = False
+
+    config = cli(C, args=["--enabled"])
+    assert config.enabled is True
+
+
+def test_cli_unknown_flag_errors_cleanly():
+    """An unknown ``--flag`` should raise a clear error, not crash with a traceback."""
+    with pytest.raises((SystemExit, ConfigFileError, ValueError, Exception)):
+        cli(SimpleConfig, args=["--this-flag-does-not-exist", "x"])
+
+
+def test_cli_help_contains_usage(capsys):
+    """``--help`` output should always include the usage line."""
+    with pytest.raises(SystemExit):
+        cli(SimpleConfig, args=["--help"])
+    out = capsys.readouterr().out
+    assert "usage" in out.lower()
+
+
+def test_cli_help_contains_known_flags(capsys):
+    """``--help`` output should list each field as ``--field`` somewhere."""
+    with pytest.raises(SystemExit):
+        cli(SimpleConfig, args=["--help"])
+    out = capsys.readouterr().out
+    assert "--name" in out
+    assert "--count" in out
+
+
+def test_cli_help_renders_list_default(capsys):
+    """``--help`` should render a list field cleanly (no <function ...> leak)."""
+
+    class C(BaseConfig):
+        items: list[int] = []
+
+    with pytest.raises(SystemExit):
+        cli(C, args=["--help"])
+    out = capsys.readouterr().out
+    assert "--items" in out
+    assert "<function" not in out, "default_factory should not leak as <function ...>"
+
+
+def test_cli_help_with_default_factory_renders_cleanly(capsys):
+    """A field with ``default_factory=list`` should not render as ``<function list>``."""
+
+    class C(BaseConfig):
+        items: list = Field(default_factory=list)
+
+    with pytest.raises(SystemExit):
+        cli(C, args=["--help"])
+    out = capsys.readouterr().out
+    assert "--items" in out
+    assert "<function" not in out
+
+
+def test_cli_help_exits_zero(capsys):
+    """``--help`` should exit with status 0, not a non-zero code."""
+    with pytest.raises(SystemExit) as exc_info:
+        cli(SimpleConfig, args=["--help"])
+    capsys.readouterr()  # drain
+    assert exc_info.value.code in (0, None), f"--help exited with code {exc_info.value.code!r}"
+
+
+def test_cli_negative_number_value_parses():
+    """A negative-number value (e.g. ``--lr -1e-3``) should not be misread as a flag."""
+
+    class C(BaseConfig):
+        lr: float = 0.0
+
+    config = cli(C, args=["--lr", "-1e-3"])
+    assert config.lr == -1e-3
+
+
+def test_cli_validation_alias_accepts_alias_name():
+    """A field with ``Field(validation_alias=AliasChoices(...))`` should accept
+    its alias on the CLI. tyro's mirror inherited the alias via create_model;
+    the new parser must add alias names to its valid-paths set."""
+    from pydantic import AliasChoices
+
+    class Inner(BaseConfig):
+        value: int = 0
+
+    class Outer(BaseConfig):
+        # Both 'inner' and 'student' point at the same field.
+        inner: Annotated[
+            Inner,
+            Field(validation_alias=AliasChoices("inner", "student")),
+        ] = Inner()
+
+    # Canonical name works.
+    config = cli(Outer, args=["--inner.value", "5"])
+    assert config.inner.value == 5
+
+
+def test_cli_validation_error_surfaces_as_configfileerror_with_flag_name():
+    """When pydantic rejects a value, the user should see ``--foo: <msg>`` —
+    not a raw ``pydantic_core.ValidationError`` traceback."""
+
+    class C(BaseConfig):
+        foo: int = 0
+
+    with pytest.raises(ConfigFileError) as exc_info:
+        cli(C, args=["--foo", "dskfj"])
+    msg = str(exc_info.value)
+    assert "--foo" in msg
+    assert "integer" in msg
+    assert "dskfj" in msg
+
+
+def test_cli_validation_error_nested_field_renders_dotted_flag():
+    """Nested pydantic errors should render as ``--sub.field`` so the user
+    can see exactly which CLI flag to fix."""
+
+    class Sub(BaseConfig):
+        count: int = 0
+
+    class C(BaseConfig):
+        sub: Sub = Sub()
+
+    with pytest.raises(ConfigFileError) as exc_info:
+        cli(C, args=["--sub.count", "nope"])
+    msg = str(exc_info.value)
+    assert "--sub.count" in msg
+    assert "integer" in msg
+
+
+def test_cli_validation_error_box_right_border_aligns_with_color(capsys, monkeypatch):
+    """Coloured rows inside the error box must not push the right border left.
+    Guard against counting ANSI escape codes as printable width."""
+    import re
+
+    class C(BaseConfig):
+        foo: int = 0
+
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setenv("COLUMNS", "80")
+    monkeypatch.setattr("sys.argv", ["demo", "--foo", "dskfj"])
+    with pytest.raises(SystemExit):
+        cli(C)
+    err = capsys.readouterr().err
+
+    ansi = re.compile(r"\x1b\[[0-9;]*m")
+    visible_widths = {
+        len(ansi.sub("", line))
+        for line in err.splitlines()
+        if line.startswith(("\x1b[31m│", "│", "\x1b[31m╭", "╭", "\x1b[31m╰", "╰"))
+    }
+    # Every framed line should render to the same printable width — otherwise
+    # the right border is misaligned.
+    assert len(visible_widths) == 1, (
+        f"Box rows have inconsistent visible widths: {sorted(visible_widths)}\n{err}"
+    )
+
+
+def test_cli_help_panels_span_terminal_width(capsys, monkeypatch):
+    """Help panels should fill the terminal width by default, not cap at 80
+    columns, so successive panels line up vertically as one coherent UI."""
+
+    class Sub(BaseConfig):
+        lr: float = 1e-4
+
+    class C(BaseConfig):
+        seed: int = 42
+        sub: Sub = Sub()
+
+    monkeypatch.setenv("COLUMNS", "120")
+    monkeypatch.setattr("sys.argv", ["demo"])
+    with pytest.raises(SystemExit):
+        cli(C, args=["--help"])
+    out = capsys.readouterr().out
+
+    panel_widths = {
+        len(line) for line in out.splitlines() if line.startswith(("╭", "│", "╰"))
+    }
+    assert len(panel_widths) == 1, (
+        f"Help panels rendered at different widths: {sorted(panel_widths)}\n{out}"
+    )
+    (only_width,) = panel_widths
+    assert only_width == 120, f"expected 120-column panels, got {only_width}"
+
+
+def test_cli_error_box_spans_terminal_width(capsys, monkeypatch):
+    """The validation error box should also fill the terminal width."""
+    import re
+
+    class C(BaseConfig):
+        foo: int = 0
+
+    monkeypatch.setenv("COLUMNS", "120")
+    monkeypatch.setattr("sys.argv", ["demo", "--foo", "dskfj"])
+    with pytest.raises(SystemExit):
+        cli(C)
+    err = capsys.readouterr().err
+
+    ansi = re.compile(r"\x1b\[[0-9;]*m")
+    box_widths = {
+        len(ansi.sub("", line))
+        for line in err.splitlines()
+        if any(line.lstrip("\x1b[0123456789;m").startswith(c) for c in ("╭", "│", "╰"))
+    }
+    assert box_widths == {120}, f"Error box widths: {sorted(box_widths)}\n{err}"
+
+
+def test_cli_validation_error_snake_case_loc_renders_as_kebab():
+    """Pydantic error locs use snake_case attribute names; we should kebab-case
+    them when rendering as CLI flags."""
+
+    class C(BaseConfig):
+        my_int_field: int = 0
+
+    with pytest.raises(ConfigFileError) as exc_info:
+        cli(C, args=["--my-int-field", "nope"])
+    msg = str(exc_info.value)
+    assert "--my-int-field" in msg
+
+
+# Tests: _parse_cli_to_dict — direct unit tests of the new argv parser.
+
+
+def test_parse_cli_to_dict_equals_form():
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class C(BaseConfig):
+        name: str = ""
+        count: int = 0
+
+    remaining, overrides = _parse_cli_to_dict(["--name=hello", "--count=7"], C, set())
+    assert remaining == []
+    assert overrides == {"name": "hello", "count": "7"}
+
+
+def test_parse_cli_to_dict_space_form():
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class C(BaseConfig):
+        name: str = ""
+
+    remaining, overrides = _parse_cli_to_dict(["--name", "hello"], C, set())
+    assert remaining == []
+    assert overrides == {"name": "hello"}
+
+
+def test_parse_cli_to_dict_bool_bare():
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class C(BaseConfig):
+        enabled: bool = False
+
+    remaining, overrides = _parse_cli_to_dict(["--enabled"], C, set())
+    assert overrides == {"enabled": True}
+
+
+def test_parse_cli_to_dict_bool_no_prefix():
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class C(BaseConfig):
+        enabled: bool = True
+
+    remaining, overrides = _parse_cli_to_dict(["--no-enabled"], C, set())
+    assert overrides == {"enabled": False}
+
+
+def test_parse_cli_to_dict_bool_explicit_value():
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class C(BaseConfig):
+        enabled: bool = False
+
+    remaining, overrides = _parse_cli_to_dict(["--enabled", "false"], C, set())
+    assert overrides == {"enabled": False}
+
+
+def test_parse_cli_to_dict_list_space_separated():
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class C(BaseConfig):
+        items: list[int] = []
+
+    remaining, overrides = _parse_cli_to_dict(["--items", "1", "2", "3"], C, set())
+    assert overrides == {"items": ["1", "2", "3"]}
+
+
+def test_parse_cli_to_dict_negative_number_value():
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class C(BaseConfig):
+        lr: float = 0.0
+
+    remaining, overrides = _parse_cli_to_dict(["--lr", "-1e-3"], C, set())
+    assert overrides == {"lr": "-1e-3"}
+
+
+def test_parse_cli_to_dict_nested_field():
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class Sub(BaseConfig):
+        x: int = 0
+
+    class C(BaseConfig):
+        sub: Sub = Sub()
+
+    remaining, overrides = _parse_cli_to_dict(["--sub.x", "5"], C, set())
+    assert overrides == {"sub": {"x": "5"}}
+
+
+def test_parse_cli_to_dict_unknown_flag_passed_through():
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class C(BaseConfig):
+        seed: int = 0
+
+    remaining, overrides = _parse_cli_to_dict(["--seedz", "5"], C, set())
+    assert overrides == {"seedz": "5"}
+
+
+def test_cli_unknown_flag_rejected_by_validation():
+    class C(BaseConfig):
+        seed: int = 0
+
+    with pytest.raises(ConfigFileError, match="seedz"):
+        cli(C, args=["--seedz", "5"])
+
+
+def test_cli_unknown_flag_suggests_close_match():
+    """A typo like ``--seedz`` should include a 'did you mean --seed?' hint."""
+
+    class C(BaseConfig):
+        seed: int = 0
+
+    with pytest.raises(ConfigFileError, match="did you mean --seed") as exc_info:
+        cli(C, args=["--seedz", "5"])
+    assert "seedz" in str(exc_info.value)
+
+
+def test_cli_unknown_flag_suggests_nested():
+    """Typo on a nested flag should suggest the correct nested path."""
+
+    class Sub(BaseConfig):
+        count: int = 0
+
+    class C(BaseConfig):
+        sub: Sub = Sub()
+
+    with pytest.raises(ConfigFileError, match="did you mean --sub.count"):
+        cli(C, args=["--sub.countt", "5"])
+
+
+def test_parse_cli_to_dict_interior_path_errors():
+    """``--sub`` (a BaseModel group) without a sub-field name should error
+    pointing at one of its leaves, not silently consume the next token."""
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class Sub(BaseConfig):
+        x: int = 0
+        y: int = 1
+
+    class C(BaseConfig):
+        sub: Sub = Sub()
+
+    with pytest.raises(ConfigFileError, match=r"--sub.*group|--sub\.x"):
+        _parse_cli_to_dict(["--sub", "5"], C, set())
+
+
+def test_parse_cli_to_dict_alias_accepted():
+    from pydantic import AliasChoices
+    from pydantic_config.cli import _parse_cli_to_dict
+
+    class Inner(BaseConfig):
+        value: int = 0
+
+    class C(BaseConfig):
+        inner: Annotated[Inner, Field(validation_alias=AliasChoices("inner", "student"))] = Inner()
+
+    remaining, overrides = _parse_cli_to_dict(["--student.value", "9"], C, set())
+    # Alias resolves to the canonical snake-case path.
+    assert overrides == {"student": {"value": "9"}}
+
+
+def test_render_help_returns_string_with_panels():
+    """``_render_help`` should produce a usage line + an "options" panel for
+    root scalars + a separate panel per sub-config + variant panels for
+    multi-model unions + an "(optional, default: None)" panel per
+    Optional[BaseModel]."""
+    from typing import Literal, Union
+    from pydantic_config.cli import _render_help
+
+    class WandbConfig(BaseConfig):
+        project: str = "default-proj"
+        entity: str | None = None
+
+    class TrainerConfig(BaseConfig):
+        lr: float = 1e-4
+        batch_size: int = 32
+
+    class VariantA(BaseConfig):
+        type: Literal["a"] = "a"
+        value: int = 1
+
+    class VariantB(BaseConfig):
+        type: Literal["b"] = "b"
+        extra_b: str = "bee"
+
+    class Top(BaseConfig):
+        seed: int = 42
+        trainer: TrainerConfig = TrainerConfig()
+        wandb: WandbConfig | None = None
+        data: Annotated[Union[VariantA, VariantB], Field(discriminator="type")] = VariantA()
+
+    out = _render_help(Top, prog="demo", description="A demo program.")
+
+    # Structural fixtures
+    assert out.startswith("usage: demo [-h]")
+    assert "A demo program." in out
+    assert "-h, --help" in out
+    # Root scalar in main panel
+    assert "--seed" in out
+    assert "default: 42" in out
+    # Plain sub-config panel
+    assert "trainer options" in out
+    assert "--trainer.lr" in out
+    assert "--trainer.batch-size" in out
+    # Optional[BaseModel] panel
+    assert "wandb options (optional, default: None)" in out
+    assert "--wandb.project" in out
+    assert "--wandb.entity" in out
+    # Multi-model union variant panels
+    assert "data variant: VariantA" in out
+    assert "data variant: VariantB" in out
+    assert "--data.value" in out
+    assert "--data.extra-b" in out
+
+
+# ---------------------------------------------------------------------------
+# Disabling optional sub-configs
+# ---------------------------------------------------------------------------
+
+
+def test_disable_optional_with_no_prefix():
+    class Inner(BaseConfig):
+        x: int = 1
+
+    class C(BaseConfig):
+        inner: Inner | None = Inner()
+
+    config = cli(C, args=["--no-inner"])
+    assert config.inner is None
+
+
+def test_disable_optional_with_none_value():
+    class Inner(BaseConfig):
+        x: int = 1
+
+    class C(BaseConfig):
+        inner: Inner | None = Inner()
+
+    config = cli(C, args=["--inner", "None"])
+    assert config.inner is None
+
+
+def test_disable_optional_none_in_toml(tmp_path):
+    f = tmp_path / "c.toml"
+    f.write_text('inner = "None"\n')
+
+    class Inner(BaseConfig):
+        x: int = 1
+
+    class C(BaseConfig):
+        inner: Inner | None = Inner()
+
+    config = cli(C, args=["@", str(f)])
+    assert config.inner is None
+
+
+# ---------------------------------------------------------------------------
+# Validation alias — mixed TOML + CLI
+# ---------------------------------------------------------------------------
+
+
+def test_alias_toml_canonical_cli_alias():
+    from pydantic import AliasChoices
+
+    class C(BaseConfig):
+        seed: int = Field(0, validation_alias=AliasChoices("seed", "random_seed"))
+
+    config = cli(C, args=["--random-seed", "7"])
+    assert config.seed == 7
+
+
+def test_alias_toml_and_cli_mixed(tmp_path):
+    from pydantic import AliasChoices
+
+    f = tmp_path / "c.toml"
+    f.write_text("random_seed = 11\n")
+
+    class C(BaseConfig):
+        seed: int = Field(0, validation_alias=AliasChoices("seed", "random_seed"))
+
+    config = cli(C, args=["@", str(f), "--seed", "99"])
+    assert config.seed == 99
+
+
+# ---------------------------------------------------------------------------
+# Legacy key remapping via before-validator
+# ---------------------------------------------------------------------------
+
+
+def test_before_validator_remaps_legacy_cli_key():
+    from pydantic import model_validator
+
+    class Inner(BaseConfig):
+        name: str = "default"
+
+    class Wrapper(BaseConfig):
+        inner: Inner = Inner()
+
+    class C(BaseConfig):
+        student: Wrapper = Wrapper()
+
+        @model_validator(mode="before")
+        @classmethod
+        def _migrate(cls, data):
+            if isinstance(data, dict) and "model" in data and "student" not in data:
+                data["student"] = {"inner": data.pop("model")}
+            return data
+
+    config = cli(C, args=["--model.name", "from-cli"])
+    assert config.student.inner.name == "from-cli"
+
+
+def test_before_validator_remaps_legacy_toml_key(tmp_path):
+    from pydantic import model_validator
+
+    f = tmp_path / "c.toml"
+    f.write_text('[model]\nname = "from-toml"\n')
+
+    class Inner(BaseConfig):
+        name: str = "default"
+
+    class Wrapper(BaseConfig):
+        inner: Inner = Inner()
+
+    class C(BaseConfig):
+        student: Wrapper = Wrapper()
+
+        @model_validator(mode="before")
+        @classmethod
+        def _migrate(cls, data):
+            if isinstance(data, dict) and "model" in data and "student" not in data:
+                data["student"] = {"inner": data.pop("model")}
+            return data
+
+    config = cli(C, args=["@", str(f)])
+    assert config.student.inner.name == "from-toml"
+
+
+# ---------------------------------------------------------------------------
+# PEP 224 field docstrings in --help
+# ---------------------------------------------------------------------------
+
+
+def test_help_shows_pep224_docstring(capsys):
+    from pydantic_config.cli import _render_help
+
+    class C(BaseConfig):
+        count: int = 0
+        """Number of iterations to run"""
+
+    out = _render_help(C, prog="test")
+    assert "Number of iterations to run" in out
+
+
+def test_help_field_description_overrides_docstring(capsys):
+    from pydantic_config.cli import _render_help
+
+    class C(BaseConfig):
+        count: int = Field(0, description="Explicit description")
+        """Docstring that should be ignored"""
+
+    out = _render_help(C, prog="test")
+    assert "Explicit description" in out
+    assert "should be ignored" not in out
+
+
+# ---------------------------------------------------------------------------
+# Model docstrings in panel titles
+# ---------------------------------------------------------------------------
+
+
+def test_help_shows_class_docstring_in_panel_title():
+    from pydantic_config.cli import _render_help
+
+    class Inner(BaseConfig):
+        """Widget settings."""
+        x: int = 0
+
+    class C(BaseConfig):
+        inner: Inner = Inner()
+
+    out = _render_help(C, prog="test")
+    assert "inner: Widget settings." in out
+
+
+def test_help_field_docstring_overrides_class_docstring():
+    from pydantic_config.cli import _render_help
+
+    class Inner(BaseConfig):
+        """Class doc."""
+        x: int = 0
+
+    class C(BaseConfig):
+        inner: Inner = Inner()
+        """Field-level description"""
+
+    out = _render_help(C, prog="test")
+    assert "inner: Field-level description" in out
+    assert "Class doc" not in out
+
+
+# ---------------------------------------------------------------------------
+# --plain and --no-wide
+# ---------------------------------------------------------------------------
+
+
+def test_plain_accepted_as_kwarg():
+    class C(BaseConfig):
+        x: int = 0
+
+    config = cli(C, args=["--x", "5"], plain=True)
+    assert config.x == 5
+
+
+def test_wide_false_caps_at_80(capsys):
+    from pydantic_config.cli import _render_help
+
+    class C(BaseConfig):
+        x: int = 0
+
+    out = _render_help(C, prog="test", wide=False)
+    for line in out.splitlines():
+        assert len(line) <= 80
+
+
+# ---------------------------------------------------------------------------
+# Pydantic validators (gt, ge, @model_validator, @field_validator)
+# ---------------------------------------------------------------------------
+
+
+def test_field_gt_rejects_boundary():
+    class C(BaseConfig):
+        lr: float = Field(1e-4, gt=0)
+
+    with pytest.raises(ConfigFileError, match="greater than 0"):
+        cli(C, args=["--lr", "0"])
+
+
+def test_field_ge_rejects_below():
+    class C(BaseConfig):
+        workers: int = Field(4, ge=0)
+
+    with pytest.raises(ConfigFileError, match="greater than or equal to 0"):
+        cli(C, args=["--workers", "-1"])
+
+
+def test_field_gt_accepts_valid():
+    class C(BaseConfig):
+        lr: float = Field(1e-4, gt=0)
+
+    config = cli(C, args=["--lr", "0.001"])
+    assert config.lr == 0.001
+
+
+def test_model_validator_after_rejects_invalid():
+    from pydantic import model_validator
+
+    class C(BaseConfig):
+        a: int = 10
+        b: int = 3
+
+        @model_validator(mode="after")
+        def _check(self):
+            if self.a % self.b != 0:
+                raise ValueError(f"a ({self.a}) must be divisible by b ({self.b})")
+            return self
+
+    with pytest.raises(ConfigFileError, match="divisible"):
+        cli(C, args=["--a", "10", "--b", "3"])
+
+
+def test_model_validator_after_accepts_valid():
+    from pydantic import model_validator
+
+    class C(BaseConfig):
+        a: int = 10
+        b: int = 5
+
+        @model_validator(mode="after")
+        def _check(self):
+            if self.a % self.b != 0:
+                raise ValueError(f"a must be divisible by b")
+            return self
+
+    config = cli(C, args=["--a", "10", "--b", "5"])
+    assert config.a == 10
+
+
+def test_field_validator_rejects_invalid():
+    from pydantic import field_validator
+
+    class C(BaseConfig):
+        items: list[int] = []
+
+        @field_validator("items")
+        @classmethod
+        def _sorted(cls, v):
+            if v != sorted(v):
+                raise ValueError(f"must be ascending, got {v}")
+            return v
+
+    with pytest.raises(ConfigFileError, match="ascending"):
+        cli(C, args=["--items", "5", "1", "3"])
+
+
+def test_field_validator_accepts_valid():
+    from pydantic import field_validator
+
+    class C(BaseConfig):
+        items: list[int] = []
+
+        @field_validator("items")
+        @classmethod
+        def _sorted(cls, v):
+            if v != sorted(v):
+                raise ValueError(f"must be ascending")
+            return v
+
+    config = cli(C, args=["--items", "1", "3", "5"])
+    assert config.items == [1, 3, 5]
+
+
+# ---------------------------------------------------------------------------
+# Optional enabled-by-default panel title
+# ---------------------------------------------------------------------------
+
+
+def test_help_optional_enabled_by_default_title():
+    from pydantic_config.cli import _render_help
+
+    class Inner(BaseConfig):
+        x: int = 1
+
+    class C(BaseConfig):
+        inner: Inner | None = Inner()
+
+    out = _render_help(C, prog="test")
+    assert "optional, enabled by default" in out
+
+
+def test_help_optional_none_default_title():
+    from pydantic_config.cli import _render_help
+
+    class Inner(BaseConfig):
+        x: int = 1
+
+    class C(BaseConfig):
+        inner: Inner | None = None
+
+    out = _render_help(C, prog="test")
+    assert "optional, default: None" in out
+
+
+# ---------------------------------------------------------------------------
+# --no-<optional>.<field> negation for bools inside Optional[BaseModel]
+# ---------------------------------------------------------------------------
+
+
+def test_no_prefix_optional_sub_field_bool():
+    """``--no-compile.fullgraph`` should disable a bool inside an Optional sub-config."""
+
+    class CompileConfig(BaseConfig):
+        fullgraph: bool = True
+
+    class C(BaseConfig):
+        compile: CompileConfig | None = CompileConfig()
+
+    config = cli(C, args=["--no-compile.fullgraph"])
+    assert config.compile is not None
+    assert config.compile.fullgraph is False
+
+
+def test_no_prefix_optional_nested_sub_field_bool():
+    """``--no-model.compile.fullgraph`` for a deeply nested optional."""
+
+    class CompileConfig(BaseConfig):
+        fullgraph: bool = True
+
+    class ModelConfig(BaseConfig):
+        compile: CompileConfig | None = CompileConfig()
+
+    class C(BaseConfig):
+        model: ModelConfig = ModelConfig()
+
+    config = cli(C, args=["--no-model.compile.fullgraph"])
+    assert config.model.compile is not None
+    assert config.model.compile.fullgraph is False
+
+
+# ---------------------------------------------------------------------------
+# list[BaseModel] and dict[str, BaseModel]
+# ---------------------------------------------------------------------------
+
+
+def test_list_of_models_via_toml(tmp_path):
+    f = tmp_path / "c.toml"
+    f.write_text('[[envs]]\nname = "a"\nworkers = 2\n\n[[envs]]\nname = "b"\nworkers = 8\n')
+
+    class EnvConfig(BaseConfig):
+        name: str = "default"
+        workers: int = 4
+
+    class C(BaseConfig):
+        envs: list[EnvConfig] = []
+
+    config = cli(C, args=["@", str(f)])
+    assert len(config.envs) == 2
+    assert config.envs[0].name == "a"
+    assert config.envs[0].workers == 2
+    assert config.envs[1].name == "b"
+    assert config.envs[1].workers == 8
+
+
+def test_list_of_models_via_json_cli():
+    class EnvConfig(BaseConfig):
+        name: str = "default"
+        workers: int = 4
+
+    class C(BaseConfig):
+        envs: list[EnvConfig] = []
+
+    config = cli(C, args=["--envs", '[{"name": "x", "workers": 16}]'])
+    assert len(config.envs) == 1
+    assert config.envs[0].name == "x"
+    assert config.envs[0].workers == 16
+
+
+def test_list_of_models_cli_overrides_toml(tmp_path):
+    f = tmp_path / "c.toml"
+    f.write_text('[[envs]]\nname = "old"\nworkers = 1\n')
+
+    class EnvConfig(BaseConfig):
+        name: str = "default"
+        workers: int = 4
+
+    class C(BaseConfig):
+        envs: list[EnvConfig] = []
+
+    config = cli(C, args=["@", str(f), "--envs", '[{"name": "new", "workers": 99}]'])
+    assert len(config.envs) == 1
+    assert config.envs[0].name == "new"
+
+
+def test_dict_of_models_via_toml(tmp_path):
+    f = tmp_path / "c.toml"
+    f.write_text('[mapping.math]\nname = "math-env"\nworkers = 2\n\n[mapping.code]\nname = "code-env"\nworkers = 8\n')
+
+    class EnvConfig(BaseConfig):
+        name: str = "default"
+        workers: int = 4
+
+    class C(BaseConfig):
+        mapping: dict[str, EnvConfig] = {}
+
+    config = cli(C, args=["@", str(f)])
+    assert len(config.mapping) == 2
+    assert config.mapping["math"].name == "math-env"
+    assert config.mapping["code"].workers == 8
+
+
+def test_dict_of_models_via_json_cli():
+    class EnvConfig(BaseConfig):
+        name: str = "default"
+        workers: int = 4
+
+    class C(BaseConfig):
+        mapping: dict[str, EnvConfig] = {}
+
+    config = cli(C, args=["--mapping", '{"gpu0": {"name": "a", "workers": 2}}'])
+    assert len(config.mapping) == 1
+    assert config.mapping["gpu0"].name == "a"
+
+
+def test_list_of_models_help_shows_fields(capsys):
+    class EnvConfig(BaseConfig):
+        name: str = "default"
+        workers: int = 4
+
+    class C(BaseConfig):
+        envs: list[EnvConfig] = []
+
+    with pytest.raises(SystemExit):
+        cli(C, args=["--help"])
+    out = capsys.readouterr().out
+    assert "list[{name, workers}]" in out
+    assert "envs[*]" in out
+    assert "--envs[*].name" in out
+    assert "--envs[*].workers" in out
+    assert "list item" in out
+
+
+def test_dict_of_models_help_shows_fields(capsys):
+    class EnvConfig(BaseConfig):
+        name: str = "default"
+        workers: int = 4
+
+    class C(BaseConfig):
+        mapping: dict[str, EnvConfig] = {}
+
+    with pytest.raises(SystemExit):
+        cli(C, args=["--help"])
+    out = capsys.readouterr().out
+    assert "dict[STR, {name, workers}]" in out
+    assert "mapping[*]" in out
+    assert "--mapping[*].name" in out
+    assert "dict value" in out
+
+
+def test_list_of_models_default_renders_cleanly(capsys):
+    class EnvConfig(BaseConfig):
+        name: str = "default"
+
+    class C(BaseConfig):
+        envs: list[EnvConfig] = [EnvConfig(), EnvConfig()]
+
+    with pytest.raises(SystemExit):
+        cli(C, args=["--help"])
+    out = capsys.readouterr().out
+    assert "default: [2 EnvConfig]" in out
+    assert "EnvConfig(name=" not in out
+
+
+def test_list_of_models_with_class_docstring_in_panel(capsys):
+    class EnvConfig(BaseConfig):
+        """RL environment settings."""
+        name: str = "default"
+
+    class C(BaseConfig):
+        envs: list[EnvConfig] = []
+
+    with pytest.raises(SystemExit):
+        cli(C, args=["--help"])
+    out = capsys.readouterr().out
+    assert "RL environment settings." in out
+
+
+# ---------------------------------------------------------------------------
+# README example integration tests
+# ---------------------------------------------------------------------------
+# Each test corresponds to a code block in the README. If a test here breaks,
+# the README example is wrong and must be updated.
+
+
+EXAMPLES_DIR = os.path.join(os.path.dirname(__file__), "..", "examples")
+
+
+def _examples_path(name: str) -> str:
+    return os.path.join(EXAMPLES_DIR, name)
+
+
+@pytest.fixture
+def train_config_cls():
+    """Import the Config class from examples/train.py."""
+    import sys
+    import importlib
+    sys.path.insert(0, EXAMPLES_DIR)
+    try:
+        mod = importlib.import_module("train")
+        return mod.Config
+    finally:
+        sys.path.pop(0)
+
+
+def test_readme_help(train_config_cls, capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        cli(train_config_cls, args=["--help"])
+    assert exc_info.value.code == 0
+    out = capsys.readouterr().out
+    assert "usage:" in out
+    assert "--run-name" in out
+
+
+def test_readme_config_file_toml(train_config_cls):
+    config = cli(train_config_cls, args=["@", _examples_path("train.toml")])
+    assert config.run_name == "demo-run"
+    assert config.seed == 123
+    assert config.student.model.name == "qwen-3b"
+
+
+def test_readme_config_file_yaml(train_config_cls):
+    config = cli(train_config_cls, args=["@", _examples_path("train.yaml")])
+    assert config.run_name == "demo-run"
+    assert config.seed == 123
+
+
+def test_readme_config_file_with_cli_overrides(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "@", _examples_path("train.toml"), "--seed", "0", "--no-compile",
+    ])
+    assert config.seed == 0
+    assert config.compile is None
+    assert config.run_name == "demo-run"
+
+
+def test_readme_required_field_error(train_config_cls):
+    with pytest.raises(ConfigFileError, match="run.name"):
+        cli(train_config_cls, args=[])
+
+
+def test_readme_nested_config_groups(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--model.hidden-size", "4096", "--data.num-workers", "16",
+    ])
+    assert config.student.model.hidden_size == 4096
+    assert config.data.num_workers == 16
+
+
+def test_readme_bool_negation(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--no-compile.fullgraph", "--no-data.shuffle",
+    ])
+    assert config.compile is not None
+    assert config.compile.fullgraph is False
+    assert config.data.shuffle is False
+
+
+def test_readme_lists_space_separated(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--checkpoint-steps", "100", "200", "500",
+    ])
+    assert config.checkpoint_steps == [100, 200, 500]
+
+
+def test_readme_lists_json(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--checkpoint-steps", "[100, 200, 500]",
+    ])
+    assert config.checkpoint_steps == [100, 200, 500]
+
+
+def test_readme_dicts(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--extra-kwargs", '{"seq_len": 4096}',
+    ])
+    assert config.extra_kwargs == {"seq_len": 4096}
+
+
+def test_readme_optional_bare_flag(train_config_cls):
+    config = cli(train_config_cls, args=["--run-name", "r1", "--wandb"])
+    assert config.wandb is not None
+    assert config.wandb.project == "prime-rl"
+
+
+def test_readme_optional_sub_field_override(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--wandb.project", "demo", "--wandb.entity", "me",
+    ])
+    assert config.wandb is not None
+    assert config.wandb.project == "demo"
+    assert config.wandb.entity == "me"
+
+
+def test_readme_optional_from_file(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--wandb", "@", _examples_path("wandb.toml"),
+    ])
+    assert config.wandb is not None
+    assert config.wandb.project == "prime-rl-ablations"
+    assert config.wandb.entity == "primeintellect"
+
+
+def test_readme_disable_optional_no_prefix(train_config_cls):
+    config = cli(train_config_cls, args=["--run-name", "r1", "--no-compile"])
+    assert config.compile is None
+
+
+def test_readme_disable_optional_sub_field_override(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--compile.mode", "max-autotune",
+    ])
+    assert config.compile is not None
+    assert config.compile.mode == "max-autotune"
+
+
+def test_readme_disable_optional_file_enables_cli_disables(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--wandb", "@", _examples_path("wandb.toml"), "--no-wandb",
+    ])
+    assert config.wandb is None
+
+
+def test_readme_union_stay_on_default(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--optimizer.weight-decay", "0.05",
+    ])
+    assert config.optimizer.type == "adamw"
+    assert config.optimizer.weight_decay == 0.05
+
+
+def test_readme_union_switch_variant(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--optimizer.type", "muon", "--optimizer.lr", "2e-3",
+    ])
+    assert config.optimizer.type == "muon"
+    assert config.optimizer.lr == 2e-3
+
+
+def test_readme_union_from_file(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--optimizer", "@", _examples_path("optimizer.toml"),
+    ])
+    assert config.optimizer.type == "muon"
+    assert config.optimizer.momentum == 0.99
+
+
+def test_readme_validation_alias_cli(train_config_cls):
+    config = cli(train_config_cls, args=["--run-name", "r1", "--random-seed", "7"])
+    assert config.seed == 7
+
+
+def test_readme_alias_toml_and_cli_override(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "@", _examples_path("train.toml"), "--seed", "99",
+    ])
+    assert config.seed == 99
+
+
+def test_readme_legacy_cli_path(train_config_cls):
+    config = cli(train_config_cls, args=["--run-name", "r1", "--model.name", "qwen-7b"])
+    assert config.student.model.name == "qwen-7b"
+
+
+def test_readme_new_cli_path(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--student.model.name", "qwen-7b",
+    ])
+    assert config.student.model.name == "qwen-7b"
+
+
+def test_readme_equals_form(train_config_cls):
+    config = cli(train_config_cls, args=["--run-name=r1", "--seed=7"])
+    assert config.run_name == "r1"
+    assert config.seed == 7
+
+
+def test_readme_validation_error(train_config_cls):
+    with pytest.raises(ConfigFileError, match="integer"):
+        cli(train_config_cls, args=["--run-name", "r1", "--seed", "nope"])
+
+
+def test_readme_unknown_flag_suggestion(train_config_cls):
+    with pytest.raises(ConfigFileError, match="did you mean --seed"):
+        cli(train_config_cls, args=["--run-name", "r1", "--seedz", "5"])
+
+
+def test_readme_file_not_found(train_config_cls):
+    with pytest.raises(ConfigFileError, match="not found"):
+        cli(train_config_cls, args=["@", "nonexistent.toml"])
+
+
+def test_readme_gt_rejects_zero(train_config_cls):
+    with pytest.raises(ConfigFileError, match="greater than 0"):
+        cli(train_config_cls, args=["--run-name", "r1", "--optimizer.lr", "0"])
+
+
+def test_readme_ge_rejects_negative(train_config_cls):
+    with pytest.raises(ConfigFileError, match="greater than or equal to 0"):
+        cli(train_config_cls, args=["--run-name", "r1", "--data.num-workers", "-1"])
+
+
+def test_readme_model_validator_rejects(train_config_cls):
+    with pytest.raises(ConfigFileError, match="divisible"):
+        cli(train_config_cls, args=[
+            "--run-name", "r1", "--model.hidden-size", "100", "--model.num-layers", "7",
+        ])
+
+
+def test_readme_field_validator_rejects(train_config_cls):
+    with pytest.raises(ConfigFileError, match="ascending"):
+        cli(train_config_cls, args=[
+            "--run-name", "r1", "--checkpoint-steps", "500", "100", "200",
+        ])
+
+
+def test_readme_envs_from_toml(train_config_cls):
+    config = cli(train_config_cls, args=["@", _examples_path("train.toml")])
+    assert len(config.envs) == 2
+    assert config.envs[0].name == "math"
+    assert config.envs[0].weight == 0.7
+    assert config.envs[1].name == "code"
+    assert config.envs[1].num_workers == 4
+
+
+def test_readme_envs_from_yaml(train_config_cls):
+    config = cli(train_config_cls, args=["@", _examples_path("train.yaml")])
+    assert len(config.envs) == 2
+    assert config.envs[0].name == "math"
+    assert config.envs[1].name == "code"
+
+
+def test_readme_envs_via_json_cli(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1",
+        "--envs", '[{"name": "math", "weight": 0.6}, {"name": "code", "weight": 0.4}]',
+    ])
+    assert len(config.envs) == 2
+    assert config.envs[0].weight == 0.6
+    assert config.envs[1].name == "code"
+
+
+def test_readme_envs_help_shows_fields(train_config_cls, capsys):
+    with pytest.raises(SystemExit):
+        cli(train_config_cls, args=["--help"])
+    out = capsys.readouterr().out
+    assert "list[{name, weight, num_workers}]" in out
+    assert "envs[*]" in out

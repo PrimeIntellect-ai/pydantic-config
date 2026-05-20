@@ -1,0 +1,34 @@
+run_name = "demo-run"
+random_seed = 123  # accepted via ``validation_alias=AliasChoices("seed", "random_seed")``
+precision = "bf16"
+output_dir = "./runs/demo"
+checkpoint_steps = [100, 500, 1000]
+
+# Legacy key — the before-validator on Config remaps model.* → student.model.*
+[model]
+name = "qwen-3b"
+hidden_size = 3072
+num_layers = 48
+
+[data]
+path = "./datasets/c4"
+num_workers = 8
+
+[optimizer]
+type = "adamw"
+lr = 1e-4
+weight_decay = 0.02
+
+[[envs]]
+name = "math"
+weight = 0.7
+num_workers = 8
+
+[[envs]]
+name = "code"
+weight = 0.3
+num_workers = 4
+
+[extra_kwargs]
+seq_len = 4096
+grad_accum = 4
