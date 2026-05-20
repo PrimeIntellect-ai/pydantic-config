@@ -695,74 +695,100 @@ def _field_description(finfo, docstring: str = "") -> str:
 _HelpRow = tuple[str, str, str]
 
 
+# A single outlier flag (deep dotted path, or a Literal with a giant inline
+# enum metavar) shouldn't widen the entire panel's flag column. Beyond this
+# cap, oversize flags are rendered on their own line and the description
+# wraps below them.
+_MAX_FLAG_COL = 60
+
+
 def _render_panel(
     title: str, rows: list[_HelpRow], term_width: int, min_flag_w: int = 0
 ) -> list[str]:
     """Render a box-drawn help panel.
 
-    ``rows`` is a list of ``(flag, description, annotation)`` triples.
-    The annotation is right-aligned to the panel border. If a description
-    is too long to fit before the annotation column it wraps onto a
-    continuation line (indented to the description column).
+    ``rows`` is a list of ``(flag, description, annotation)`` triples. The
+    annotation (``default: X`` / ``required``) is appended inline to the
+    description in parentheses. Long descriptions wrap onto continuation
+    lines indented to the description column. Flags longer than
+    ``_MAX_FLAG_COL`` are emitted on their own line so they can't starve
+    the description column.
     """
     if not rows:
         return []
 
-    flag_w = max(min_flag_w, max(len(f) for f, _, _ in rows))
-    anno_w = max((len(a) for _, _, a in rows), default=0)
+    # Merge annotation into description so we render a single text column.
+    merged: list[tuple[str, str]] = [
+        (flag, f"{desc} ({anno})" if desc and anno else (anno or desc))
+        for flag, desc, anno in rows
+    ]
+
+    short_flag_widths = [len(f) for f, _ in merged if len(f) <= _MAX_FLAG_COL]
+    flag_w = max(min_flag_w, max(short_flag_widths, default=0))
     desc_col = flag_w + 2  # where descriptions start
 
-    # Box width is driven by the fixed-width columns (flags + annotations),
-    # never by description length — descriptions wrap to fit.
-    fixed_width = desc_col + anno_w + 2 if anno_w else desc_col
-    box_total = max(term_width, fixed_width + 4, len(title) + 6)
+    # Box width is driven by the fixed flag column, never by description
+    # or title length — both wrap to fit.
+    box_total = max(term_width, desc_col + 4)
     inner = box_total - 4
+    max_desc_w = inner - desc_col
 
-    # Maximum description width before it hits the annotation column.
-    max_desc_w = inner - desc_col - anno_w - 2 if anno_w else inner - desc_col
+    def _wrap(text: str, width: int) -> list[str]:
+        # Hard-break tokens longer than ``width`` (e.g. a giant
+        # ``Literal[...]`` metavar) so they can't overflow the box.
+        words: list[str] = []
+        for raw in text.split():
+            while len(raw) > width:
+                words.append(raw[:width])
+                raw = raw[width:]
+            words.append(raw)
+        out: list[str] = []
+        cur = ""
+        for word in words:
+            if not cur:
+                cur = word
+            elif len(cur) + 1 + len(word) <= width:
+                cur += " " + word
+            else:
+                out.append(cur)
+                cur = word
+        if cur:
+            out.append(cur)
+        return out
 
-    horiz = "─" * max(1, box_total - len(title) - 5)
-    out: list[str] = [f"╭─ {title} {horiz}╮"]
+    # Title goes on the top border up to ``box_total - 6`` chars (room for
+    # the ``╭─ `` prefix and ``  ─╮`` suffix). Overflow wraps into ``│ …  │``
+    # continuation rows below the border.
+    title_chunks = _wrap(title, box_total - 6) if title else [""]
+    horiz = "─" * max(1, box_total - len(title_chunks[0]) - 5)
+    out: list[str] = [f"╭─ {title_chunks[0]} {horiz}╮"]
+    for chunk in title_chunks[1:]:
+        out.append(f"│ {chunk:<{inner}} │")
 
     def _box_line(text: str) -> str:
         return f"│ {text:<{inner}} │"
 
-    for flag, desc, anno in rows:
-        if desc and max_desc_w > 0 and len(desc) > max_desc_w:
-            # Word-wrap the description so it doesn't collide with the
-            # annotation column.
-            words = desc.split()
-            wrapped: list[str] = []
-            cur = ""
-            for word in words:
-                if not cur:
-                    cur = word
-                elif len(cur) + 1 + len(word) <= max_desc_w:
-                    cur += " " + word
-                else:
-                    wrapped.append(cur)
-                    cur = word
-            if cur:
-                wrapped.append(cur)
+    for flag, text in merged:
+        # Oversize flag: print on its own line, then wrap text below.
+        # If the flag itself is longer than ``inner``, wrap it too — long
+        # ``Literal`` metavars (e.g. ``{a,b,c,d,e}``) can blow past the box.
+        if len(flag) > flag_w:
+            flag_chunks = [flag] if len(flag) <= inner else _wrap(flag, inner)
+            for chunk in flag_chunks:
+                out.append(_box_line(chunk))
+            wrapped = _wrap(text, max_desc_w) if text and max_desc_w > 0 else ([text] if text else [""])
+            for chunk in wrapped:
+                out.append(_box_line(f"{' ' * desc_col}{chunk}"))
+            continue
 
-            # First line: flag + first chunk of description + annotation.
-            first_desc = wrapped[0] if wrapped else ""
-            left = f"{flag:<{flag_w}}  {first_desc}"
-            if anno:
-                gap = inner - len(left) - len(anno)
-                out.append(_box_line(f"{left}{' ' * max(2, gap)}{anno}"))
-            else:
-                out.append(_box_line(left.rstrip()))
-            # Continuation lines: indented to the description column.
+        if text and max_desc_w > 0 and len(text) > max_desc_w:
+            wrapped = _wrap(text, max_desc_w)
+            first = wrapped[0] if wrapped else ""
+            out.append(_box_line(f"{flag:<{flag_w}}  {first}"))
             for chunk in wrapped[1:]:
                 out.append(_box_line(f"{' ' * desc_col}{chunk}"))
         else:
-            left = f"{flag:<{flag_w}}  {desc}".rstrip()
-            if anno:
-                gap = inner - len(left) - len(anno)
-                out.append(_box_line(f"{left}{' ' * max(2, gap)}{anno}"))
-            else:
-                out.append(_box_line(left))
+            out.append(_box_line(f"{flag:<{flag_w}}  {text}".rstrip()))
 
     out.append(f"╰{'─' * (box_total - 2)}╯")
     return out
@@ -942,13 +968,6 @@ def _render_help(
     header_rows: list[_HelpRow] = [("-h, --help", "show this help message and exit", ""), *root_rows]
     all_panels: list[_HelpPanel] = [("options", header_rows), *sub_panels]
 
-    # Compute a global flag column width so descriptions start at the same
-    # column across every panel.
-    global_flag_w = max(
-        (len(flag) for _, rows in all_panels for flag, _, _ in rows),
-        default=0,
-    )
-
     lines: list[str] = [f"usage: {prog} [-h] [@ FILE] [OPTIONS]"]
     if description:
         lines.append("")
@@ -956,8 +975,12 @@ def _render_help(
             lines.append(paragraph)
     lines.append("")
 
+    # Each panel sizes its flag column to its own widest flag. A single
+    # global width would let one deeply-nested flag (e.g.
+    # ``--orchestrator.eval.env[*].sampling.reasoning-effort``) starve
+    # every other panel's description column.
     for title, rows in all_panels:
-        lines.extend(_render_panel(title, rows, term_width, min_flag_w=global_flag_w))
+        lines.extend(_render_panel(title, rows, term_width))
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
