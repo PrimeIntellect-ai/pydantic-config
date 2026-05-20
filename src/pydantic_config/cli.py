@@ -707,29 +707,31 @@ def _render_panel(
 ) -> list[str]:
     """Render a box-drawn help panel.
 
-    ``rows`` is a list of ``(flag, description, annotation)`` triples.
-    The annotation is right-aligned to the panel border. If a description
-    is too long to fit before the annotation column it wraps onto a
-    continuation line (indented to the description column). Flags longer
-    than ``_MAX_FLAG_COL`` are emitted on their own line so they can't
-    starve the description column.
+    ``rows`` is a list of ``(flag, description, annotation)`` triples. The
+    annotation (``default: X`` / ``required``) is appended inline to the
+    description in parentheses. Long descriptions wrap onto continuation
+    lines indented to the description column. Flags longer than
+    ``_MAX_FLAG_COL`` are emitted on their own line so they can't starve
+    the description column.
     """
     if not rows:
         return []
 
-    short_flag_widths = [len(f) for f, _, _ in rows if len(f) <= _MAX_FLAG_COL]
+    # Merge annotation into description so we render a single text column.
+    merged: list[tuple[str, str]] = [
+        (flag, f"{desc} ({anno})" if desc and anno else (anno or desc))
+        for flag, desc, anno in rows
+    ]
+
+    short_flag_widths = [len(f) for f, _ in merged if len(f) <= _MAX_FLAG_COL]
     flag_w = max(min_flag_w, max(short_flag_widths, default=0))
-    anno_w = max((len(a) for _, _, a in rows), default=0)
     desc_col = flag_w + 2  # where descriptions start
 
-    # Box width is driven by the fixed-width columns (flags + annotations),
-    # never by description length — descriptions wrap to fit.
-    fixed_width = desc_col + anno_w + 2 if anno_w else desc_col
-    box_total = max(term_width, fixed_width + 4, len(title) + 6)
+    # Box width is driven by the fixed flag column, never by description
+    # length — descriptions wrap to fit.
+    box_total = max(term_width, desc_col + 4, len(title) + 6)
     inner = box_total - 4
-
-    # Maximum description width before it hits the annotation column.
-    max_desc_w = inner - desc_col - anno_w - 2 if anno_w else inner - desc_col
+    max_desc_w = inner - desc_col
 
     horiz = "─" * max(1, box_total - len(title) - 5)
     out: list[str] = [f"╭─ {title} {horiz}╮"]
@@ -753,42 +755,23 @@ def _render_panel(
             out.append(cur)
         return out
 
-    for flag, desc, anno in rows:
-        # Oversize flag: print on its own line, then wrap description below.
+    for flag, text in merged:
+        # Oversize flag: print on its own line, then wrap text below.
         if len(flag) > flag_w:
             out.append(_box_line(flag))
-            wrapped = _wrap(desc, max_desc_w) if desc and max_desc_w > 0 else ([desc] if desc else [""])
-            first_desc = wrapped[0] if wrapped else ""
-            left = f"{' ' * flag_w}  {first_desc}"
-            if anno:
-                gap = inner - len(left) - len(anno)
-                out.append(_box_line(f"{left}{' ' * max(2, gap)}{anno}"))
-            else:
-                out.append(_box_line(left.rstrip()))
-            for chunk in wrapped[1:]:
+            wrapped = _wrap(text, max_desc_w) if text and max_desc_w > 0 else ([text] if text else [""])
+            for chunk in wrapped:
                 out.append(_box_line(f"{' ' * desc_col}{chunk}"))
             continue
 
-        if desc and max_desc_w > 0 and len(desc) > max_desc_w:
-            wrapped = _wrap(desc, max_desc_w)
-            # First line: flag + first chunk of description + annotation.
-            first_desc = wrapped[0] if wrapped else ""
-            left = f"{flag:<{flag_w}}  {first_desc}"
-            if anno:
-                gap = inner - len(left) - len(anno)
-                out.append(_box_line(f"{left}{' ' * max(2, gap)}{anno}"))
-            else:
-                out.append(_box_line(left.rstrip()))
-            # Continuation lines: indented to the description column.
+        if text and max_desc_w > 0 and len(text) > max_desc_w:
+            wrapped = _wrap(text, max_desc_w)
+            first = wrapped[0] if wrapped else ""
+            out.append(_box_line(f"{flag:<{flag_w}}  {first}"))
             for chunk in wrapped[1:]:
                 out.append(_box_line(f"{' ' * desc_col}{chunk}"))
         else:
-            left = f"{flag:<{flag_w}}  {desc}".rstrip()
-            if anno:
-                gap = inner - len(left) - len(anno)
-                out.append(_box_line(f"{left}{' ' * max(2, gap)}{anno}"))
-            else:
-                out.append(_box_line(left))
+            out.append(_box_line(f"{flag:<{flag_w}}  {text}".rstrip()))
 
     out.append(f"╰{'─' * (box_total - 2)}╯")
     return out
