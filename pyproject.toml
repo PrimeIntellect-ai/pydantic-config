@@ -34,7 +34,7 @@ line-length = 120
 
 [dependency-groups]
 dev = [
-    "ruff==0.5.0",
+    "ruff>=0.12.1",
     "pre-commit>=3.0.0",
     "pytest>=9.0.3",
     "rich>=15.0.0",
