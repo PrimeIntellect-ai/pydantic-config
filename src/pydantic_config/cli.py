@@ -942,13 +942,6 @@ def _render_help(
     header_rows: list[_HelpRow] = [("-h, --help", "show this help message and exit", ""), *root_rows]
     all_panels: list[_HelpPanel] = [("options", header_rows), *sub_panels]
 
-    # Compute a global flag column width so descriptions start at the same
-    # column across every panel.
-    global_flag_w = max(
-        (len(flag) for _, rows in all_panels for flag, _, _ in rows),
-        default=0,
-    )
-
     lines: list[str] = [f"usage: {prog} [-h] [@ FILE] [OPTIONS]"]
     if description:
         lines.append("")
@@ -956,8 +949,12 @@ def _render_help(
             lines.append(paragraph)
     lines.append("")
 
+    # Each panel sizes its flag column to its own widest flag. A single
+    # global width would let one deeply-nested flag (e.g.
+    # ``--orchestrator.eval.env[*].sampling.reasoning-effort``) starve
+    # every other panel's description column.
     for title, rows in all_panels:
-        lines.extend(_render_panel(title, rows, term_width, min_flag_w=global_flag_w))
+        lines.extend(_render_panel(title, rows, term_width))
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
