@@ -1603,6 +1603,30 @@ def test_cli_unknown_flag_rejected_by_validation():
         cli(C, args=["--seedz", "5"])
 
 
+def test_cli_unknown_flag_suggests_close_match():
+    """A typo like ``--seedz`` should include a 'did you mean --seed?' hint."""
+
+    class C(BaseConfig):
+        seed: int = 0
+
+    with pytest.raises(ConfigFileError, match="did you mean --seed") as exc_info:
+        cli(C, args=["--seedz", "5"])
+    assert "seedz" in str(exc_info.value)
+
+
+def test_cli_unknown_flag_suggests_nested():
+    """Typo on a nested flag should suggest the correct nested path."""
+
+    class Sub(BaseConfig):
+        count: int = 0
+
+    class C(BaseConfig):
+        sub: Sub = Sub()
+
+    with pytest.raises(ConfigFileError, match="did you mean --sub.count"):
+        cli(C, args=["--sub.countt", "5"])
+
+
 def test_parse_cli_to_dict_interior_path_errors():
     """``--sub`` (a BaseModel group) without a sub-field name should error
     pointing at one of its leaves, not silently consume the next token."""
@@ -2024,3 +2048,277 @@ def test_help_optional_none_default_title():
 
     out = _render_help(C, prog="test")
     assert "optional, default: None" in out
+
+
+# ---------------------------------------------------------------------------
+# --no-<optional>.<field> negation for bools inside Optional[BaseModel]
+# ---------------------------------------------------------------------------
+
+
+def test_no_prefix_optional_sub_field_bool():
+    """``--no-compile.fullgraph`` should disable a bool inside an Optional sub-config."""
+
+    class CompileConfig(BaseConfig):
+        fullgraph: bool = True
+
+    class C(BaseConfig):
+        compile: CompileConfig | None = CompileConfig()
+
+    config = cli(C, args=["--no-compile.fullgraph"])
+    assert config.compile is not None
+    assert config.compile.fullgraph is False
+
+
+def test_no_prefix_optional_nested_sub_field_bool():
+    """``--no-model.compile.fullgraph`` for a deeply nested optional."""
+
+    class CompileConfig(BaseConfig):
+        fullgraph: bool = True
+
+    class ModelConfig(BaseConfig):
+        compile: CompileConfig | None = CompileConfig()
+
+    class C(BaseConfig):
+        model: ModelConfig = ModelConfig()
+
+    config = cli(C, args=["--no-model.compile.fullgraph"])
+    assert config.model.compile is not None
+    assert config.model.compile.fullgraph is False
+
+
+# ---------------------------------------------------------------------------
+# README example integration tests
+# ---------------------------------------------------------------------------
+# Each test corresponds to a code block in the README. If a test here breaks,
+# the README example is wrong and must be updated.
+
+
+EXAMPLES_DIR = os.path.join(os.path.dirname(__file__), "..", "examples")
+
+
+def _examples_path(name: str) -> str:
+    return os.path.join(EXAMPLES_DIR, name)
+
+
+@pytest.fixture
+def train_config_cls():
+    """Import the Config class from examples/train.py."""
+    import sys
+    import importlib
+    sys.path.insert(0, EXAMPLES_DIR)
+    try:
+        mod = importlib.import_module("train")
+        return mod.Config
+    finally:
+        sys.path.pop(0)
+
+
+def test_readme_help(train_config_cls, capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        cli(train_config_cls, args=["--help"])
+    assert exc_info.value.code == 0
+    out = capsys.readouterr().out
+    assert "usage:" in out
+    assert "--run-name" in out
+
+
+def test_readme_config_file_toml(train_config_cls):
+    config = cli(train_config_cls, args=["@", _examples_path("train.toml")])
+    assert config.run_name == "demo-run"
+    assert config.seed == 123
+    assert config.student.model.name == "qwen-3b"
+
+
+def test_readme_config_file_yaml(train_config_cls):
+    config = cli(train_config_cls, args=["@", _examples_path("train.yaml")])
+    assert config.run_name == "demo-run"
+    assert config.seed == 123
+
+
+def test_readme_config_file_with_cli_overrides(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "@", _examples_path("train.toml"), "--seed", "0", "--no-compile",
+    ])
+    assert config.seed == 0
+    assert config.compile is None
+    assert config.run_name == "demo-run"
+
+
+def test_readme_required_field_error(train_config_cls):
+    with pytest.raises(ConfigFileError, match="run.name"):
+        cli(train_config_cls, args=[])
+
+
+def test_readme_nested_config_groups(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--model.hidden-size", "4096", "--data.num-workers", "16",
+    ])
+    assert config.student.model.hidden_size == 4096
+    assert config.data.num_workers == 16
+
+
+def test_readme_bool_negation(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--no-compile.fullgraph", "--no-data.shuffle",
+    ])
+    assert config.compile is not None
+    assert config.compile.fullgraph is False
+    assert config.data.shuffle is False
+
+
+def test_readme_lists_space_separated(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--checkpoint-steps", "100", "200", "500",
+    ])
+    assert config.checkpoint_steps == [100, 200, 500]
+
+
+def test_readme_lists_json(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--checkpoint-steps", "[100, 200, 500]",
+    ])
+    assert config.checkpoint_steps == [100, 200, 500]
+
+
+def test_readme_dicts(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--extra-kwargs", '{"seq_len": 4096}',
+    ])
+    assert config.extra_kwargs == {"seq_len": 4096}
+
+
+def test_readme_optional_bare_flag(train_config_cls):
+    config = cli(train_config_cls, args=["--run-name", "r1", "--wandb"])
+    assert config.wandb is not None
+    assert config.wandb.project == "prime-rl"
+
+
+def test_readme_optional_sub_field_override(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--wandb.project", "demo", "--wandb.entity", "me",
+    ])
+    assert config.wandb is not None
+    assert config.wandb.project == "demo"
+    assert config.wandb.entity == "me"
+
+
+def test_readme_optional_from_file(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--wandb", "@", _examples_path("wandb.toml"),
+    ])
+    assert config.wandb is not None
+    assert config.wandb.project == "prime-rl-ablations"
+    assert config.wandb.entity == "primeintellect"
+
+
+def test_readme_disable_optional_no_prefix(train_config_cls):
+    config = cli(train_config_cls, args=["--run-name", "r1", "--no-compile"])
+    assert config.compile is None
+
+
+def test_readme_disable_optional_sub_field_override(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--compile.mode", "max-autotune",
+    ])
+    assert config.compile is not None
+    assert config.compile.mode == "max-autotune"
+
+
+def test_readme_disable_optional_file_enables_cli_disables(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--wandb", "@", _examples_path("wandb.toml"), "--no-wandb",
+    ])
+    assert config.wandb is None
+
+
+def test_readme_union_stay_on_default(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--optimizer.weight-decay", "0.05",
+    ])
+    assert config.optimizer.type == "adamw"
+    assert config.optimizer.weight_decay == 0.05
+
+
+def test_readme_union_switch_variant(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--optimizer.type", "muon", "--optimizer.lr", "2e-3",
+    ])
+    assert config.optimizer.type == "muon"
+    assert config.optimizer.lr == 2e-3
+
+
+def test_readme_union_from_file(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--optimizer", "@", _examples_path("optimizer.toml"),
+    ])
+    assert config.optimizer.type == "muon"
+    assert config.optimizer.momentum == 0.99
+
+
+def test_readme_validation_alias_cli(train_config_cls):
+    config = cli(train_config_cls, args=["--run-name", "r1", "--random-seed", "7"])
+    assert config.seed == 7
+
+
+def test_readme_alias_toml_and_cli_override(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "@", _examples_path("train.toml"), "--seed", "99",
+    ])
+    assert config.seed == 99
+
+
+def test_readme_legacy_cli_path(train_config_cls):
+    config = cli(train_config_cls, args=["--run-name", "r1", "--model.name", "qwen-7b"])
+    assert config.student.model.name == "qwen-7b"
+
+
+def test_readme_new_cli_path(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1", "--student.model.name", "qwen-7b",
+    ])
+    assert config.student.model.name == "qwen-7b"
+
+
+def test_readme_equals_form(train_config_cls):
+    config = cli(train_config_cls, args=["--run-name=r1", "--seed=7"])
+    assert config.run_name == "r1"
+    assert config.seed == 7
+
+
+def test_readme_validation_error(train_config_cls):
+    with pytest.raises(ConfigFileError, match="integer"):
+        cli(train_config_cls, args=["--run-name", "r1", "--seed", "nope"])
+
+
+def test_readme_unknown_flag_suggestion(train_config_cls):
+    with pytest.raises(ConfigFileError, match="did you mean --seed"):
+        cli(train_config_cls, args=["--run-name", "r1", "--seedz", "5"])
+
+
+def test_readme_file_not_found(train_config_cls):
+    with pytest.raises(ConfigFileError, match="not found"):
+        cli(train_config_cls, args=["@", "nonexistent.toml"])
+
+
+def test_readme_gt_rejects_zero(train_config_cls):
+    with pytest.raises(ConfigFileError, match="greater than 0"):
+        cli(train_config_cls, args=["--run-name", "r1", "--optimizer.lr", "0"])
+
+
+def test_readme_ge_rejects_negative(train_config_cls):
+    with pytest.raises(ConfigFileError, match="greater than or equal to 0"):
+        cli(train_config_cls, args=["--run-name", "r1", "--data.num-workers", "-1"])
+
+
+def test_readme_model_validator_rejects(train_config_cls):
+    with pytest.raises(ConfigFileError, match="divisible"):
+        cli(train_config_cls, args=[
+            "--run-name", "r1", "--model.hidden-size", "100", "--model.num-layers", "7",
+        ])
+
+
+def test_readme_field_validator_rejects(train_config_cls):
+    with pytest.raises(ConfigFileError, match="ascending"):
+        cli(train_config_cls, args=[
+            "--run-name", "r1", "--checkpoint-steps", "500", "100", "200",
+        ])

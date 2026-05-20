@@ -96,7 +96,7 @@ Bare `--flag` sets a bool to `True`; `--no-flag` sets it to `False`. Works on
 nested fields too.
 
 ```bash
-uv run python examples/train.py --run-name r1 --no-model.compile --no-data.shuffle
+uv run python examples/train.py --run-name r1 --no-compile.fullgraph --no-data.shuffle
 ```
 
 <p align="center">

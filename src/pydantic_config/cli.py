@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import difflib
 import importlib.util
 import inspect
 import json
@@ -96,9 +97,8 @@ class BaseConfig(BaseModel):
     def _coerce_dict_str_values(cls, data: dict) -> dict:
         """Coerce string values in dict-typed fields back to proper Python types.
 
-        tyro parses untyped dict values as strings. This detects dict fields
-        whose values are all strings (i.e. from CLI parsing) and converts
-        them back to int/float/bool.
+        CLI-parsed dict values arrive as strings. This detects dict fields
+        whose values are all strings and converts them back to int/float/bool.
         """
         if not isinstance(data, dict):
             return data
@@ -327,7 +327,14 @@ def _loc_to_cli_flag(loc: tuple) -> str:
     return "--" + ".".join(parts)
 
 
-def _format_validation_error_for_cli(error: ValidationError) -> str:
+def _suggest_flag(unknown: str, known: list[str], n: int = 1) -> list[str]:
+    """Return up to ``n`` close matches for ``unknown`` from ``known`` flags."""
+    return difflib.get_close_matches(unknown, known, n=n, cutoff=0.6)
+
+
+def _format_validation_error_for_cli(
+    error: ValidationError, known_flags: list[str] | None = None
+) -> str:
     """Render a ``pydantic.ValidationError`` as a CLI-flag-flavoured multi-line
     message suitable for ``_print_config_error_and_exit``.
 
@@ -335,6 +342,9 @@ def _format_validation_error_for_cli(error: ValidationError) -> str:
     ``<cli-flag>: <msg> (got <input>)``. The input is omitted when it's a
     container (dict / list), since the per-leaf errors that follow show the
     real culprit.
+
+    When ``known_flags`` is provided, "extra fields not permitted" errors
+    get a "did you mean --X?" suggestion via ``difflib``.
     """
     errors = error.errors()
     count = len(errors)
@@ -348,6 +358,11 @@ def _format_validation_error_for_cli(error: ValidationError) -> str:
         suffix = ""
         if input_value is not None and not isinstance(input_value, (dict, list)):
             suffix = f" (got {input_value!r})"
+        if known_flags and err.get("type") == "extra_forbidden" and loc:
+            unknown_kebab = str(loc[-1]).replace("_", "-")
+            suggestions = _suggest_flag(unknown_kebab, known_flags)
+            if suggestions:
+                suffix += f"  — did you mean --{suggestions[0]}?"
         lines.append(flag)
         lines.append(f"  {msg}{suffix}")
     return "\n".join(lines)
@@ -975,6 +990,17 @@ def _expand_bare_optional_flags(
                 i += 1
                 continue
 
+            # Pattern 3b: --no-<optional>.<field> (e.g. --no-compile.fullgraph)
+            if path.startswith("no-"):
+                no_stripped = path[3:]
+                matched = _match_optional_prefix(no_stripped, optional_paths)
+                if matched is not None:
+                    snake_path = no_stripped.replace("-", "_")
+                    nested = _nest_config(snake_path, False)
+                    overrides = _deep_merge(overrides, nested)
+                    i += 1
+                    continue
+
             # Pattern 1 / 2: bare flag or explicit "None"
             if path in optional_paths:
                 next_is_value = i + 1 < len(args) and not args[i + 1].startswith("-") and not args[i + 1].startswith("@")
@@ -993,7 +1019,7 @@ def _expand_bare_optional_flags(
                     i += 1
                     continue
 
-            # Pattern 2: sub-field override (e.g. --wandb.project foo)
+            # Pattern 4: sub-field override (e.g. --wandb.project foo)
             matched = _match_optional_prefix(path, optional_paths)
             if matched is not None:
                 snake_path = path.replace("-", "_")
@@ -1347,8 +1373,7 @@ def cli(
     """
     Parse CLI arguments into a typed config object, with support for config files.
 
-    Drop-in replacement for tyro.cli() with additional support for loading
-    config files using the @ syntax:
+    Supports loading config files using the @ syntax:
         - `@ config.toml` - Load root-level config
         - `--model @ model.toml` - Load config nested under 'model'
         - `--model @model.toml` - Same as above (no space)
@@ -1422,7 +1447,7 @@ def cli(
             remaining_args, json_overrides = _extract_json_value_args(remaining_args, json_paths)
             cli_overrides = _deep_merge(cli_overrides, json_overrides)
 
-        # 3. --help is rendered from ``cls.model_fields``, no tyro round-trip.
+        # 3. --help is rendered directly from ``cls.model_fields``.
         if "--help" in remaining_args or "-h" in remaining_args:
             sys.stdout.write(_render_help(cls, prog=prog, description=description, wide=wide_resolved))
             sys.exit(0)
@@ -1438,6 +1463,10 @@ def cli(
             raise ConfigFileError(
                 f"Unrecognized arguments: {' '.join(remaining_args)}"
             )
+
+        # Build the set of known kebab-case leaf flags for "did you mean" hints.
+        known_leaves, _ = _build_field_meta_map(cls)
+        known_flags = sorted(known_leaves.keys())
 
         # 5. Compose the precedence layers and validate once. Order:
         #    caller default  ⊂  TOML/@-file  ⊂  CLI overrides.
@@ -1456,7 +1485,9 @@ def cli(
             # Surface pydantic errors with CLI-flag-flavoured wording so users
             # see ``--foo: Input should be a valid integer (got 'dskfj')`` rather
             # than a raw pydantic_core traceback.
-            raise ConfigFileError(_format_validation_error_for_cli(e)) from e
+            raise ConfigFileError(
+                _format_validation_error_for_cli(e, known_flags=known_flags)
+            ) from e
     except ConfigFileError as e:
         # Only print formatted error when running from CLI (sys.argv);
         # when args are explicitly passed, re-raise for programmatic handling.
