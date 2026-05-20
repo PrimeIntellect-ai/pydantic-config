@@ -728,19 +728,20 @@ def _render_panel(
     desc_col = flag_w + 2  # where descriptions start
 
     # Box width is driven by the fixed flag column, never by description
-    # length — descriptions wrap to fit.
-    box_total = max(term_width, desc_col + 4, len(title) + 6)
+    # or title length — both wrap to fit.
+    box_total = max(term_width, desc_col + 4)
     inner = box_total - 4
     max_desc_w = inner - desc_col
 
-    horiz = "─" * max(1, box_total - len(title) - 5)
-    out: list[str] = [f"╭─ {title} {horiz}╮"]
-
-    def _box_line(text: str) -> str:
-        return f"│ {text:<{inner}} │"
-
     def _wrap(text: str, width: int) -> list[str]:
-        words = text.split()
+        # Hard-break tokens longer than ``width`` (e.g. a giant
+        # ``Literal[...]`` metavar) so they can't overflow the box.
+        words: list[str] = []
+        for raw in text.split():
+            while len(raw) > width:
+                words.append(raw[:width])
+                raw = raw[width:]
+            words.append(raw)
         out: list[str] = []
         cur = ""
         for word in words:
@@ -755,10 +756,26 @@ def _render_panel(
             out.append(cur)
         return out
 
+    # Title goes on the top border up to ``box_total - 6`` chars (room for
+    # the ``╭─ `` prefix and ``  ─╮`` suffix). Overflow wraps into ``│ …  │``
+    # continuation rows below the border.
+    title_chunks = _wrap(title, box_total - 6) if title else [""]
+    horiz = "─" * max(1, box_total - len(title_chunks[0]) - 5)
+    out: list[str] = [f"╭─ {title_chunks[0]} {horiz}╮"]
+    for chunk in title_chunks[1:]:
+        out.append(f"│ {chunk:<{inner}} │")
+
+    def _box_line(text: str) -> str:
+        return f"│ {text:<{inner}} │"
+
     for flag, text in merged:
         # Oversize flag: print on its own line, then wrap text below.
+        # If the flag itself is longer than ``inner``, wrap it too — long
+        # ``Literal`` metavars (e.g. ``{a,b,c,d,e}``) can blow past the box.
         if len(flag) > flag_w:
-            out.append(_box_line(flag))
+            flag_chunks = [flag] if len(flag) <= inner else _wrap(flag, inner)
+            for chunk in flag_chunks:
+                out.append(_box_line(chunk))
             wrapped = _wrap(text, max_desc_w) if text and max_desc_w > 0 else ([text] if text else [""])
             for chunk in wrapped:
                 out.append(_box_line(f"{' ' * desc_col}{chunk}"))
