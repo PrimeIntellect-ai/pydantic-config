@@ -50,6 +50,15 @@ class MuonConfig(BaseConfig):
 OptimizerConfig = Annotated[AdamWConfig | MuonConfig, Field(discriminator="type")]
 
 
+class EnvConfig(BaseConfig):
+    """RL environment settings."""
+
+    name: str = "math"
+    """Environment identifier"""
+    weight: float = Field(1.0, ge=0, description="Sampling weight for this env")
+    num_workers: int = Field(4, ge=0, description="Parallel rollout workers")
+
+
 class DataConfig(BaseConfig):
     """Dataset and dataloader settings."""
 
@@ -115,9 +124,12 @@ class Config(BaseConfig):
     optimizer: OptimizerConfig = AdamWConfig()
 
     compile: CompileConfig | None = CompileConfig()
-    """torch.compile settings (pass --no-compile to disable)"""
+    """torch.compile settings"""
 
     wandb: WandbConfig | None = None
+
+    envs: list[EnvConfig] = [EnvConfig()]
+    """RL environments to train on"""
 
     checkpoint_steps: list[int] = []
     """Steps at which to save a checkpoint"""

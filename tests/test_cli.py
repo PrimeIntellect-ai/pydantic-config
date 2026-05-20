@@ -2087,6 +2087,153 @@ def test_no_prefix_optional_nested_sub_field_bool():
 
 
 # ---------------------------------------------------------------------------
+# list[BaseModel] and dict[str, BaseModel]
+# ---------------------------------------------------------------------------
+
+
+def test_list_of_models_via_toml(tmp_path):
+    f = tmp_path / "c.toml"
+    f.write_text('[[envs]]\nname = "a"\nworkers = 2\n\n[[envs]]\nname = "b"\nworkers = 8\n')
+
+    class EnvConfig(BaseConfig):
+        name: str = "default"
+        workers: int = 4
+
+    class C(BaseConfig):
+        envs: list[EnvConfig] = []
+
+    config = cli(C, args=["@", str(f)])
+    assert len(config.envs) == 2
+    assert config.envs[0].name == "a"
+    assert config.envs[0].workers == 2
+    assert config.envs[1].name == "b"
+    assert config.envs[1].workers == 8
+
+
+def test_list_of_models_via_json_cli():
+    class EnvConfig(BaseConfig):
+        name: str = "default"
+        workers: int = 4
+
+    class C(BaseConfig):
+        envs: list[EnvConfig] = []
+
+    config = cli(C, args=["--envs", '[{"name": "x", "workers": 16}]'])
+    assert len(config.envs) == 1
+    assert config.envs[0].name == "x"
+    assert config.envs[0].workers == 16
+
+
+def test_list_of_models_cli_overrides_toml(tmp_path):
+    f = tmp_path / "c.toml"
+    f.write_text('[[envs]]\nname = "old"\nworkers = 1\n')
+
+    class EnvConfig(BaseConfig):
+        name: str = "default"
+        workers: int = 4
+
+    class C(BaseConfig):
+        envs: list[EnvConfig] = []
+
+    config = cli(C, args=["@", str(f), "--envs", '[{"name": "new", "workers": 99}]'])
+    assert len(config.envs) == 1
+    assert config.envs[0].name == "new"
+
+
+def test_dict_of_models_via_toml(tmp_path):
+    f = tmp_path / "c.toml"
+    f.write_text('[mapping.math]\nname = "math-env"\nworkers = 2\n\n[mapping.code]\nname = "code-env"\nworkers = 8\n')
+
+    class EnvConfig(BaseConfig):
+        name: str = "default"
+        workers: int = 4
+
+    class C(BaseConfig):
+        mapping: dict[str, EnvConfig] = {}
+
+    config = cli(C, args=["@", str(f)])
+    assert len(config.mapping) == 2
+    assert config.mapping["math"].name == "math-env"
+    assert config.mapping["code"].workers == 8
+
+
+def test_dict_of_models_via_json_cli():
+    class EnvConfig(BaseConfig):
+        name: str = "default"
+        workers: int = 4
+
+    class C(BaseConfig):
+        mapping: dict[str, EnvConfig] = {}
+
+    config = cli(C, args=["--mapping", '{"gpu0": {"name": "a", "workers": 2}}'])
+    assert len(config.mapping) == 1
+    assert config.mapping["gpu0"].name == "a"
+
+
+def test_list_of_models_help_shows_fields(capsys):
+    class EnvConfig(BaseConfig):
+        name: str = "default"
+        workers: int = 4
+
+    class C(BaseConfig):
+        envs: list[EnvConfig] = []
+
+    with pytest.raises(SystemExit):
+        cli(C, args=["--help"])
+    out = capsys.readouterr().out
+    assert "list[{name, workers}]" in out
+    assert "envs[*]" in out
+    assert "--envs[*].name" in out
+    assert "--envs[*].workers" in out
+    assert "list item" in out
+
+
+def test_dict_of_models_help_shows_fields(capsys):
+    class EnvConfig(BaseConfig):
+        name: str = "default"
+        workers: int = 4
+
+    class C(BaseConfig):
+        mapping: dict[str, EnvConfig] = {}
+
+    with pytest.raises(SystemExit):
+        cli(C, args=["--help"])
+    out = capsys.readouterr().out
+    assert "dict[STR, {name, workers}]" in out
+    assert "mapping[*]" in out
+    assert "--mapping[*].name" in out
+    assert "dict value" in out
+
+
+def test_list_of_models_default_renders_cleanly(capsys):
+    class EnvConfig(BaseConfig):
+        name: str = "default"
+
+    class C(BaseConfig):
+        envs: list[EnvConfig] = [EnvConfig(), EnvConfig()]
+
+    with pytest.raises(SystemExit):
+        cli(C, args=["--help"])
+    out = capsys.readouterr().out
+    assert "default: [2 EnvConfig]" in out
+    assert "EnvConfig(name=" not in out
+
+
+def test_list_of_models_with_class_docstring_in_panel(capsys):
+    class EnvConfig(BaseConfig):
+        """RL environment settings."""
+        name: str = "default"
+
+    class C(BaseConfig):
+        envs: list[EnvConfig] = []
+
+    with pytest.raises(SystemExit):
+        cli(C, args=["--help"])
+    out = capsys.readouterr().out
+    assert "RL environment settings." in out
+
+
+# ---------------------------------------------------------------------------
 # README example integration tests
 # ---------------------------------------------------------------------------
 # Each test corresponds to a code block in the README. If a test here breaks,
@@ -2322,3 +2469,37 @@ def test_readme_field_validator_rejects(train_config_cls):
         cli(train_config_cls, args=[
             "--run-name", "r1", "--checkpoint-steps", "500", "100", "200",
         ])
+
+
+def test_readme_envs_from_toml(train_config_cls):
+    config = cli(train_config_cls, args=["@", _examples_path("train.toml")])
+    assert len(config.envs) == 2
+    assert config.envs[0].name == "math"
+    assert config.envs[0].weight == 0.7
+    assert config.envs[1].name == "code"
+    assert config.envs[1].num_workers == 4
+
+
+def test_readme_envs_from_yaml(train_config_cls):
+    config = cli(train_config_cls, args=["@", _examples_path("train.yaml")])
+    assert len(config.envs) == 2
+    assert config.envs[0].name == "math"
+    assert config.envs[1].name == "code"
+
+
+def test_readme_envs_via_json_cli(train_config_cls):
+    config = cli(train_config_cls, args=[
+        "--run-name", "r1",
+        "--envs", '[{"name": "math", "weight": 0.6}, {"name": "code", "weight": 0.4}]',
+    ])
+    assert len(config.envs) == 2
+    assert config.envs[0].weight == 0.6
+    assert config.envs[1].name == "code"
+
+
+def test_readme_envs_help_shows_fields(train_config_cls, capsys):
+    with pytest.raises(SystemExit):
+        cli(train_config_cls, args=["--help"])
+    out = capsys.readouterr().out
+    assert "list[{name, weight, num_workers}]" in out
+    assert "envs[*]" in out

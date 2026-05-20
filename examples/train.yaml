@@ -18,6 +18,14 @@ optimizer:
   lr: 1e-4
   weight_decay: 0.02
 
+envs:
+  - name: math
+    weight: 0.7
+    num_workers: 8
+  - name: code
+    weight: 0.3
+    num_workers: 4
+
 extra_kwargs:
   seq_len: 4096
   grad_accum: 4

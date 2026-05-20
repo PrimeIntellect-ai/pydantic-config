@@ -567,6 +567,16 @@ def _find_multi_union_variants(cls: type, prefix: str = "") -> dict[str, tuple[l
     return result
 
 
+def _model_fields_shorthand(cls: type) -> str:
+    """Render a ``{field1, field2, ...}`` shorthand for a BaseModel's fields."""
+    if not hasattr(cls, "model_fields"):
+        return cls.__name__
+    names = list(cls.model_fields.keys())
+    if len(names) <= 4:
+        return "{" + ", ".join(names) + "}"
+    return "{" + ", ".join(names[:3]) + ", ...}"
+
+
 def _format_type_for_help(annotation) -> str:
     """Render an annotation as a tyro-style metavar (e.g. INT, STR, {a,b})."""
     if annotation is None:
@@ -582,7 +592,14 @@ def _format_type_for_help(annotation) -> str:
     if origin is list:
         args = get_args(annotation)
         inner = args[0] if args else None
+        if inner is not None and isinstance(inner, type) and issubclass(inner, BaseModel):
+            return f"list[{_model_fields_shorthand(inner)}]"
         return f"[{_format_type_for_help(inner)} [...]]"
+    if origin is dict:
+        args = get_args(annotation)
+        if len(args) == 2 and isinstance(args[1], type) and issubclass(args[1], BaseModel):
+            key_str = _format_type_for_help(args[0])
+            return f"dict[{key_str}, {_model_fields_shorthand(args[1])}]"
     if origin is Union or origin is getattr(types, "UnionType", None):
         non_none = [a for a in get_args(annotation) if a is not type(None)]
         if len(non_none) == 1:
@@ -606,6 +623,10 @@ def _format_default_for_help(default: Any) -> str:
     """
     if isinstance(default, BaseModel):
         return ""
+    if isinstance(default, list) and default and isinstance(default[0], BaseModel):
+        n = len(default)
+        cls_name = type(default[0]).__name__
+        return f"default: [{n} {cls_name}]" if n > 1 else f"default: [1 {cls_name}]"
     if default is None:
         return "default: None"
     if repr(default) == "PydanticUndefined":
@@ -756,6 +777,34 @@ def _is_union(annotation) -> bool:
 _HelpPanel = tuple[str, list[_HelpRow]]
 
 
+def _list_inner_model(annotation) -> type | None:
+    """If ``annotation`` is ``list[SomeBaseModel]``, return ``SomeBaseModel``."""
+    inner = _strip_annotated(annotation)
+    if get_origin(inner) is list:
+        args = get_args(inner)
+        if args and isinstance(args[0], type) and issubclass(args[0], BaseModel):
+            return args[0]
+    if _is_union(inner):
+        non_none = [a for a in get_args(inner) if a is not type(None)]
+        if len(non_none) == 1:
+            return _list_inner_model(non_none[0])
+    return None
+
+
+def _dict_inner_model(annotation) -> type | None:
+    """If ``annotation`` is ``dict[K, SomeBaseModel]``, return ``SomeBaseModel``."""
+    inner = _strip_annotated(annotation)
+    if get_origin(inner) is dict:
+        args = get_args(inner)
+        if len(args) == 2 and isinstance(args[1], type) and issubclass(args[1], BaseModel):
+            return args[1]
+    if _is_union(inner):
+        non_none = [a for a in get_args(inner) if a is not type(None)]
+        if len(non_none) == 1:
+            return _dict_inner_model(non_none[0])
+    return None
+
+
 def _panel_description(inner_cls: type, finfo, field_docstring: str = "") -> str:
     """Derive a one-line description for a sub-config panel title.
 
@@ -830,6 +879,25 @@ def _collect_help_panels(
             child_rows, child_panels = _collect_help_panels(inner, prefix=full_path)
             desc = _panel_description(inner, finfo, docstrings.get(fname, ""))
             title = f"{full_path}: {desc}" if desc else f"{full_path} options"
+            sub_panels.append((title, child_rows))
+            sub_panels.extend(child_panels)
+            continue
+
+        # list[BaseModel] or dict[str, BaseModel] — show as a leaf with a
+        # reference sub-panel describing the inner model's fields.
+        list_model = _list_inner_model(annotation)
+        dict_model = _dict_inner_model(annotation)
+        item_cls = list_model or dict_model
+        if item_cls is not None:
+            type_str = _format_type_for_help(annotation)
+            flag = f"--{full_path}"
+            if type_str:
+                flag = f"{flag} {type_str}"
+            rows.append(_make_row(flag, finfo, docstrings.get(fname, "")))
+            child_rows, child_panels = _collect_help_panels(item_cls, prefix=f"{full_path}[*]")
+            tag = "list item" if list_model else "dict value"
+            desc = _panel_description(item_cls, finfo, docstrings.get(fname, ""))
+            title = f"{full_path}[*]: {desc} ({tag}, via @ file or JSON)" if desc else f"{full_path}[*] fields ({tag}, via @ file or JSON)"
             sub_panels.append((title, child_rows))
             sub_panels.extend(child_panels)
             continue
