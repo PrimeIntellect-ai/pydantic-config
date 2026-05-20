@@ -649,31 +649,38 @@ def _extract_field_docstrings(cls: type) -> dict[str, str]:
             seed: int = 42
             \"\"\"Random seed for reproducibility.\"\"\"
 
+    Walks ``cls.__mro__`` so docstrings on inherited fields are also picked up;
+    subclass docstrings shadow base-class docstrings.
+
     Returns a ``{field_name: docstring}`` dict. Fields without a trailing
     string literal are absent from the result.
     """
-    try:
-        source = textwrap.dedent(inspect.getsource(cls))
-        tree = ast.parse(source)
-    except (OSError, TypeError, SyntaxError):
-        return {}
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == cls.__name__:
-            break
-    else:
-        return {}
-
     result: dict[str, str] = {}
-    body = node.body
-    for i, stmt in enumerate(body):
-        if not isinstance(stmt, ast.AnnAssign) or not isinstance(stmt.target, ast.Name):
+    for base in reversed(cls.__mro__):
+        if base is object:
             continue
-        if i + 1 >= len(body):
+        try:
+            source = textwrap.dedent(inspect.getsource(base))
+            tree = ast.parse(source)
+        except (OSError, TypeError, SyntaxError):
             continue
-        nxt = body[i + 1]
-        if isinstance(nxt, ast.Expr) and isinstance(nxt.value, ast.Constant) and isinstance(nxt.value.value, str):
-            result[stmt.target.id] = nxt.value.value.strip()
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == base.__name__:
+                class_node = node
+                break
+        else:
+            continue
+
+        body = class_node.body
+        for i, stmt in enumerate(body):
+            if not isinstance(stmt, ast.AnnAssign) or not isinstance(stmt.target, ast.Name):
+                continue
+            if i + 1 >= len(body):
+                continue
+            nxt = body[i + 1]
+            if isinstance(nxt, ast.Expr) and isinstance(nxt.value, ast.Constant) and isinstance(nxt.value.value, str):
+                result[stmt.target.id] = nxt.value.value.strip()
     return result
 
 
@@ -835,7 +842,10 @@ def _collect_help_panels(
     docstrings = _extract_field_docstrings(cls)
 
     def _make_row(flag: str, finfo, ds: str = "") -> _HelpRow:
-        return (flag, _field_description(finfo, ds), _format_default_for_help(finfo.default))
+        default = finfo.default
+        if repr(default) == "PydanticUndefined" and finfo.default_factory is not None:
+            default = finfo.default_factory
+        return (flag, _field_description(finfo, ds), _format_default_for_help(default))
 
     for fname, finfo in cls.model_fields.items():
         kebab = fname.replace("_", "-")
