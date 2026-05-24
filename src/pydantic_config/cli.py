@@ -81,6 +81,16 @@ def _is_dict_annotation(annotation: type) -> bool:
     return annotation is dict or get_origin(annotation) is dict
 
 
+def _dict_value_type_is_str(annotation: type) -> bool:
+    """``True`` if ``annotation`` is ``dict[K, str]`` (annotated value type is ``str``)."""
+    if hasattr(annotation, "__metadata__"):
+        annotation = get_args(annotation)[0]
+    if get_origin(annotation) is not dict:
+        return False
+    args = get_args(annotation)
+    return len(args) == 2 and args[1] is str
+
+
 class BaseConfig(BaseModel):
     """Base configuration class with strict validation (extra fields forbidden)."""
 
@@ -104,14 +114,19 @@ class BaseConfig(BaseModel):
 
         CLI-parsed dict values arrive as strings. This detects dict fields
         whose values are all strings and converts them back to int/float/bool.
+        Fields annotated ``dict[K, str]`` are left alone — the values are
+        already the correct type and coercion would clobber e.g. ``"0"`` → ``0``.
         """
         if not isinstance(data, dict):
             return data
         for field_name, field_info in cls.model_fields.items():
-            if _is_dict_annotation(field_info.annotation) and field_name in data:
-                val = data[field_name]
-                if isinstance(val, dict):
-                    data[field_name] = _coerce_dict_values(val)
+            if not _is_dict_annotation(field_info.annotation) or field_name not in data:
+                continue
+            if _dict_value_type_is_str(field_info.annotation):
+                continue
+            val = data[field_name]
+            if isinstance(val, dict):
+                data[field_name] = _coerce_dict_values(val)
         return data
 
     @model_validator(mode="before")

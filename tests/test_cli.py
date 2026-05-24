@@ -828,6 +828,47 @@ def test_dict_any_in_discriminated_union(tmp_toml_file):
     assert config.mode.kwargs == {"alpha": 0.5}
 
 
+def test_dict_str_str_preserves_numeric_looking_strings(tmp_toml_file):
+    """dict[str, str] fields must not coerce ``"0"`` / ``"true"`` to int/bool.
+
+    Regression for a case where env-var overrides like
+    ``{"VLLM_ENABLE_MOE_DP_CHUNK"="0"}`` were silently coerced to
+    ``{"VLLM_ENABLE_MOE_DP_CHUNK": 0}`` and then rejected by pydantic.
+    """
+
+    class Config(BaseConfig):
+        env_overrides: dict[str, str] = {}
+
+    write_file(
+        tmp_toml_file,
+        'env_overrides = {"VLLM_ENABLE_MOE_DP_CHUNK"="0", "FLAG"="true", "NAME"="skip"}\n',
+    )
+    config = cli(Config, args=["@", tmp_toml_file])
+    assert config.env_overrides == {
+        "VLLM_ENABLE_MOE_DP_CHUNK": "0",
+        "FLAG": "true",
+        "NAME": "skip",
+    }
+
+
+def test_dict_str_any_still_coerces_cli_string_values():
+    """dict[str, Any] CLI overrides should still be coerced to int/bool.
+
+    Ensures the dict[str, str] fix doesn't regress the existing coercion
+    path that lets CLI-parsed dict values (which arrive as strings) become
+    proper Python types before pydantic validates them.
+    """
+    from typing import Any
+
+    class Config(BaseConfig):
+        kwargs: dict[str, Any] = {}
+
+    config = cli(Config, args=["--kwargs", '{"seq_len": "512", "verbose": "true"}'])
+    # JSON path preserves the strings as-is — coercion only fires when every
+    # value is a string (the CLI-parsed signature).
+    assert config.kwargs == {"seq_len": 512, "verbose": True}
+
+
 # Tests: list fields via JSON CLI args
 
 
