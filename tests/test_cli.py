@@ -1823,6 +1823,137 @@ def test_alias_toml_and_cli_mixed(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Single-dash short flags (single-character validation aliases)
+# ---------------------------------------------------------------------------
+
+
+def test_short_flag_scalar():
+    from pydantic import AliasChoices
+
+    class C(BaseConfig):
+        num_samples: int = Field(1, validation_alias=AliasChoices("num_samples", "n"))
+
+    assert cli(C, args=["-n", "5"]).num_samples == 5
+
+
+def test_short_flag_equals_form():
+    from pydantic import AliasChoices
+
+    class C(BaseConfig):
+        num_samples: int = Field(1, validation_alias=AliasChoices("num_samples", "n"))
+
+    assert cli(C, args=["-n=5"]).num_samples == 5
+
+
+def test_short_flag_bool():
+    from pydantic import AliasChoices
+
+    class C(BaseConfig):
+        verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
+
+    assert cli(C, args=["-v"]).verbose is True
+    assert cli(C, args=["-v", "false"]).verbose is False
+
+
+def test_short_flag_list():
+    from pydantic import AliasChoices
+
+    class C(BaseConfig):
+        tags: list[str] = Field(default_factory=list, validation_alias=AliasChoices("tags", "t"))
+
+    assert cli(C, args=["-t", "a", "b"]).tags == ["a", "b"]
+
+
+def test_short_flag_nested():
+    from pydantic import AliasChoices
+
+    class Inner(BaseConfig):
+        lr: float = Field(1e-4, validation_alias=AliasChoices("lr", "l"))
+
+    class C(BaseConfig):
+        inner: Inner = Inner()
+
+    assert cli(C, args=["-l", "0.5"]).inner.lr == 0.5
+
+
+def test_short_flag_long_form_still_works():
+    """Adding the ``-n`` short flag must not break ``--num-samples`` / ``--n``."""
+    from pydantic import AliasChoices
+
+    class C(BaseConfig):
+        num_samples: int = Field(1, validation_alias=AliasChoices("num_samples", "n"))
+
+    assert cli(C, args=["--num-samples", "5"]).num_samples == 5
+    assert cli(C, args=["--n", "5"]).num_samples == 5
+
+
+def test_short_flag_overrides_toml(tmp_path):
+    """A short flag is a true synonym for the long flag, so it overrides TOML."""
+    from pydantic import AliasChoices
+
+    f = tmp_path / "c.toml"
+    f.write_text("seed = 11\n")
+
+    class C(BaseConfig):
+        seed: int = Field(0, validation_alias=AliasChoices("seed", "s"))
+
+    assert cli(C, args=["@", str(f), "-s", "99"]).seed == 99
+
+
+def test_short_flag_only_single_letter_aliases():
+    """Only single-character aliases become ``-x`` short flags.
+
+    A multi-character alias such as ``lr`` is a long flag (``--lr``) only;
+    ``-lr`` must NOT be interpreted as a short flag.
+    """
+    from pydantic import AliasChoices
+
+    class C(BaseConfig):
+        learning_rate: float = Field(1e-3, validation_alias=AliasChoices("learning_rate", "lr"))
+
+    # The long form of the multi-char alias still works.
+    assert cli(C, args=["--lr", "0.5"]).learning_rate == 0.5
+
+    # But the single-dash form is not registered and is rejected.
+    with pytest.raises(ConfigFileError, match="Unrecognized arguments: -lr"):
+        cli(C, args=["-lr", "0.5"])
+
+
+def test_no_short_flag_without_alias():
+    """A single-character *field name* without an explicit alias is a long flag
+    only — short flags are opt-in via ``validation_alias``."""
+
+    class C(BaseConfig):
+        n: int = 1
+
+    assert cli(C, args=["--n", "5"]).n == 5
+    with pytest.raises(ConfigFileError, match="Unrecognized arguments: -n"):
+        cli(C, args=["-n", "5"])
+
+
+def test_short_flag_negative_value_not_treated_as_flag():
+    """A leading-dash *value* (e.g. a negative number) is not a short flag."""
+    from pydantic import AliasChoices
+
+    class C(BaseConfig):
+        offset: int = Field(0, validation_alias=AliasChoices("offset", "o"))
+        name: str = "x"
+
+    assert cli(C, args=["--name", "-5"]).name == "-5"
+    assert cli(C, args=["-o", "-5"]).offset == -5
+
+
+def test_short_flag_shown_in_help():
+    from pydantic import AliasChoices
+    from pydantic_config.cli import _render_help
+
+    class C(BaseConfig):
+        num_samples: int = Field(1, validation_alias=AliasChoices("num_samples", "n"))
+
+    assert "-n, --num-samples" in _render_help(C)
+
+
+# ---------------------------------------------------------------------------
 # Legacy key remapping via before-validator
 # ---------------------------------------------------------------------------
 

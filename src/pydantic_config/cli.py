@@ -705,6 +705,24 @@ def _field_description(finfo, docstring: str = "") -> str:
     return (finfo.description or docstring or "").strip()
 
 
+def _field_short_flag(finfo) -> str | None:
+    """Return the single-character ``validation_alias`` for a field, if any.
+
+    This is the alias that ``_expand_short_flags`` exposes as a ``-x`` short
+    flag, surfaced in ``--help`` as ``-x, --long`` (mirroring ``-h, --help``).
+    """
+    alias = finfo.validation_alias
+    names: list[str] = []
+    if isinstance(alias, AliasChoices):
+        names = [c for c in alias.choices if isinstance(c, str)]
+    elif isinstance(alias, str):
+        names = [alias]
+    for name in names:
+        if len(name) == 1:
+            return name
+    return None
+
+
 # A help row is (flag_with_metavar, description, annotation) where annotation
 # is the right-aligned ``(default: X)`` / ``(required)`` tag.
 _HelpRow = tuple[str, str, str]
@@ -941,9 +959,9 @@ def _collect_help_panels(
         item_cls = list_model or dict_model
         if item_cls is not None:
             type_str = _format_type_for_help(annotation)
-            flag = f"--{full_path}"
-            if type_str:
-                flag = f"{flag} {type_str}"
+            short = _field_short_flag(finfo)
+            name = f"-{short}, --{full_path}" if short else f"--{full_path}"
+            flag = f"{name} {type_str}" if type_str else name
             rows.append(_make_row(flag, finfo, docstrings.get(fname, "")))
             child_rows, child_panels = _collect_help_panels(item_cls, prefix=f"{full_path}[*]")
             tag = "list item" if list_model else "dict value"
@@ -955,9 +973,9 @@ def _collect_help_panels(
 
         # Leaf field.
         type_str = _format_type_for_help(annotation)
-        flag = f"--{full_path}"
-        if type_str:
-            flag = f"{flag} {type_str}"
+        short = _field_short_flag(finfo)
+        name = f"-{short}, --{full_path}" if short else f"--{full_path}"
+        flag = f"{name} {type_str}" if type_str else name
         rows.append(_make_row(flag, finfo, docstrings.get(fname, "")))
 
     return rows, sub_panels
@@ -1071,6 +1089,64 @@ def _extract_json_value_args(args: list[str], json_paths: set[str]) -> tuple[lis
         i += 1
 
     return remaining, overrides
+
+
+def _find_short_flag_paths(cls: type, prefix: str = "") -> dict[str, str]:
+    """Map single-dash short flags to the long CLI path they stand in for.
+
+    A *short flag* is declared as a single-character entry in a field's
+    ``validation_alias`` (``AliasChoices``). For example::
+
+        n_samples: Annotated[int, Field(validation_alias=AliasChoices("n_samples", "n"))] = 1
+
+    registers ``-n`` → ``--n-samples`` (the field's canonical long flag). Because
+    expansion happens before every other arg pass, ``-n`` becomes a true synonym
+    for ``--n-samples`` across all config forms — scalars, bools, lists, JSON
+    dict/list values, optional sub-configs, and TOML overrides — with no special
+    casing in the parser.
+
+    Returns ``{char: long_kebab_path}``. Nested fields produce dotted paths
+    (e.g. a short flag on ``model.lr`` maps to ``model.lr``). On collision the
+    last-registered field wins; short flags are expected to be unique like any
+    short option.
+    """
+    shorts: dict[str, str] = {}
+    if not hasattr(cls, "model_fields"):
+        return shorts
+    for field_name, finfo in cls.model_fields.items():
+        kebab = field_name.replace("_", "-")
+        full_path = f"{prefix}.{kebab}" if prefix else kebab
+
+        short = _field_short_flag(finfo)
+        if short is not None:
+            shorts[short] = full_path
+
+        inner = _strip_annotated(finfo.annotation)
+        if isinstance(inner, type) and issubclass(inner, BaseModel):
+            shorts.update(_find_short_flag_paths(inner, prefix=full_path))
+    return shorts
+
+
+def _expand_short_flags(args: list[str], shorts: dict[str, str]) -> list[str]:
+    """Rewrite single-dash short flags to their long ``--`` equivalents.
+
+    Handles ``-n value`` and ``-n=value`` (the value, if attached, is preserved
+    on the rewritten flag). Tokens that aren't a registered short flag — bare
+    ``-``, ``--`` long flags, and negative-number values like ``-1e-3`` — pass
+    through untouched, so this is safe to run before the other arg passes.
+    """
+    if not shorts:
+        return args
+    out: list[str] = []
+    for token in args:
+        if token.startswith("-") and not token.startswith("--") and len(token) > 1:
+            key, eq, value = token[1:].partition("=")
+            if key in shorts:
+                long = f"--{shorts[key]}"
+                out.append(f"{long}={value}" if eq else long)
+                continue
+        out.append(token)
+    return out
 
 
 def _match_optional_prefix(path: str, optional_paths: set[str]) -> str | None:
@@ -1552,6 +1628,11 @@ def cli(
         for key_path, config in nested_configs.items():
             nested = _nest_config(key_path, config)
             toml_dict = _deep_merge(toml_dict, nested)
+
+        # 1b. Expand single-dash short flags (e.g. ``-n`` → ``--n-samples``)
+        #     declared as single-character ``validation_alias`` entries. Runs
+        #     first so every downstream pass sees the canonical long form.
+        remaining_args = _expand_short_flags(remaining_args, _find_short_flag_paths(cls))
 
         # 2. Pre-extract CLI args that can't be matched by leaf path lookup —
         #    Optional[BaseModel] / discriminated-union sub-flags, and JSON-encoded

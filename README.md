@@ -196,6 +196,24 @@ uv run python examples/train.py @ examples/train.toml --seed 99    # TOML alias 
   <img src="assets/alias.svg" alt="Validation alias" width="700">
 </p>
 
+### Single-dash short flags
+
+A **single-character** validation alias is also exposed as a `-x` short flag, so
+you can type `-s 0` instead of `--seed 0`. The short flag appears in `--help` as
+`-s, --seed` (just like `-h, --help`) and accepts the same `-s 0` / `-s=0` forms.
+Multi-character aliases stay long-only — `--random-seed` works but `-random-seed`
+does not.
+
+```python
+seed: int = Field(42, validation_alias=AliasChoices("seed", "random_seed", "s"))
+```
+
+```bash
+uv run python examples/train.py --run-name r1 -s 0        # short flag
+uv run python examples/train.py --run-name r1 -s=0        # attached value
+uv run python examples/train.py --run-name r1 --seed 0    # long form still works
+```
+
 ### Legacy key remapping via before-validators
 
 When a config key is renamed (e.g. `model.*` → `student.model.*`), a
