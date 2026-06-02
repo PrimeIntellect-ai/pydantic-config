@@ -102,8 +102,8 @@ class Config(BaseConfig):
 
     seed: int = Field(
         42,
-        description="Random seed for reproducibility (alias: --random-seed)",
-        validation_alias=AliasChoices("seed", "random_seed"),
+        description="Random seed for reproducibility (aliases: --random-seed, -s)",
+        validation_alias=AliasChoices("seed", "random_seed", "s"),
     )
     precision: Literal["bf16", "fp16", "fp32"] = "bf16"
     """Mixed-precision dtype"""
