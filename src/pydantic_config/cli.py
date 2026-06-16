@@ -723,9 +723,10 @@ def _field_short_flag(finfo) -> str | None:
     return None
 
 
-# A help row is (flag_with_metavar, description, annotation) where annotation
-# is the right-aligned ``(default: X)`` / ``(required)`` tag.
-_HelpRow = tuple[str, str, str]
+# A help row is (flag_with_metavar, description, annotation, is_set) where
+# annotation is the right-aligned ``(default: X)`` / ``(required)`` tag, and
+# is_set indicates whether the value was explicitly provided (CLI / config file).
+_HelpRow = tuple[str, str, str, bool]
 
 
 # A single outlier flag (deep dotted path, or a Literal with a giant inline
@@ -740,20 +741,29 @@ def _render_panel(
 ) -> list[str]:
     """Render a box-drawn help panel.
 
-    ``rows`` is a list of ``(flag, description, annotation)`` triples. The
-    annotation (``default: X`` / ``required``) is appended inline to the
-    description in parentheses. Long descriptions wrap onto continuation
-    lines indented to the description column. Flags longer than
-    ``_MAX_FLAG_COL`` are emitted on their own line so they can't starve
-    the description column.
+    ``rows`` is a list of ``(flag, description, annotation, is_set)``
+    4-tuples. The annotation (``default: X`` / ``required``) is appended
+    inline to the description in parentheses. Long descriptions wrap onto
+    continuation lines indented to the description column. Flags longer
+    than ``_MAX_FLAG_COL`` are emitted on their own line so they can't
+    starve the description column.
+
+    When any row has ``is_set=True``, the panel is partitioned: set rows
+    appear first, followed by a thin ``├─…─┤`` separator, then unset rows.
     """
     if not rows:
         return []
 
+    # Partition into (set, unset) when any value is explicitly provided.
+    set_rows = [r for r in rows if r[3]]
+    unset_rows = [r for r in rows if not r[3]]
+    ordered = set_rows + unset_rows
+    separator_after = len(set_rows) if set_rows and unset_rows else 0
+
     # Merge annotation into description so we render a single text column.
     merged: list[tuple[str, str]] = [
         (flag, f"{desc} ({anno})" if desc and anno else (anno or desc))
-        for flag, desc, anno in rows
+        for flag, desc, anno, _ in ordered
     ]
 
     short_flag_widths = [len(f) for f, _ in merged if len(f) <= _MAX_FLAG_COL]
@@ -801,7 +811,11 @@ def _render_panel(
     def _box_line(text: str) -> str:
         return f"│ {text:<{inner}} │"
 
-    for flag, text in merged:
+    for _row_idx, (flag, text) in enumerate(merged):
+        # Insert a thin separator between the "set" and "unset" sections.
+        if separator_after and _row_idx == separator_after:
+            out.append(f"├{'─' * (box_total - 2)}┤")
+
         # Oversize flag: print on its own line, then wrap text below.
         # If the flag itself is longer than ``inner``, wrap it too — long
         # ``Literal`` metavars (e.g. ``{a,b,c,d,e}``) can blow past the box.
@@ -887,29 +901,64 @@ def _panel_description(inner_cls: type, finfo, field_docstring: str = "") -> str
 
 
 def _collect_help_panels(
-    cls: type, prefix: str = ""
+    cls: type, prefix: str = "", set_values: dict | None = None,
 ) -> tuple[list[_HelpRow], list[_HelpPanel]]:
     """Walk ``cls.model_fields`` to collect help rows and sub-panel specs.
 
     Returns ``(rows, sub_panels)`` where ``rows`` is the list of leaf
-    ``(flag, annotation)`` pairs to emit in the *current* panel and
-    ``sub_panels`` is a list of ``(title, rows)`` tuples for every
-    sub-config / Optional[BaseModel] / multi-model union variant.
+    ``(flag, description, annotation, is_set)`` tuples to emit in the
+    *current* panel and ``sub_panels`` is a list of ``(title, rows)``
+    tuples for every sub-config / Optional[BaseModel] / multi-model union
+    variant.
+
+    ``set_values`` is an optional nested dict of values that have been
+    explicitly provided (merged CLI + config-file overrides). When a leaf
+    field's name appears in ``set_values``, its help row is tagged
+    ``is_set=True`` and its annotation shows the provided value alongside
+    the default.
     """
+    if set_values is None:
+        set_values = {}
     rows: list[_HelpRow] = []
     sub_panels: list[_HelpPanel] = []
     docstrings = _extract_field_docstrings(cls)
 
-    def _make_row(flag: str, finfo, ds: str = "") -> _HelpRow:
+    def _make_row(flag: str, finfo, ds: str = "", *, is_set: bool = False, set_val: Any = None) -> _HelpRow:
         default = finfo.default
         if repr(default) == "PydanticUndefined" and finfo.default_factory is not None:
             default = finfo.default_factory
-        return (flag, _field_description(finfo, ds), _format_default_for_help(default))
+        if is_set:
+            default_str = _format_default_for_help(default)
+            # Coerce CLI string values to their actual types for display.
+            display_val = _coerce_str_value(set_val) if isinstance(set_val, str) else set_val
+            val_repr = repr(display_val) if isinstance(display_val, str) else str(display_val)
+            if default_str:
+                anno = f"set: {val_repr}, {default_str}"
+            else:
+                anno = f"set: {val_repr}"
+        else:
+            anno = _format_default_for_help(default)
+        return (flag, _field_description(finfo, ds), anno, is_set)
 
     for fname, finfo in cls.model_fields.items():
         kebab = fname.replace("_", "-")
         full_path = f"{prefix}.{kebab}" if prefix else kebab
         annotation = finfo.annotation
+        # Check all accepted names (field name + validation aliases) against set_values.
+        field_set_val = set_values.get(fname)
+        if field_set_val is None:
+            # Try alias names too.
+            alias = finfo.validation_alias
+            if isinstance(alias, AliasChoices):
+                for choice in alias.choices:
+                    if isinstance(choice, str) and choice in set_values:
+                        field_set_val = set_values[choice]
+                        break
+            elif isinstance(alias, str) and alias in set_values:
+                field_set_val = set_values[alias]
+        field_is_set = field_set_val is not None
+        # For sub-configs, the set value is a dict — pass it down for recursion.
+        child_set = field_set_val if isinstance(field_set_val, dict) else {}
 
         if _is_multi_model_union(annotation):
             inner = _strip_annotated(annotation)
@@ -922,7 +971,10 @@ def _collect_help_panels(
                     flag = f"--{full_path}.{vfname.replace('_', '-')}"
                     if type_str:
                         flag = f"{flag} {type_str}"
-                    vrows.append(_make_row(flag, vfinfo, vdocs.get(vfname, "")))
+                    v_is_set = vfname in child_set
+                    v_set_val = child_set.get(vfname)
+                    vrows.append(_make_row(flag, vfinfo, vdocs.get(vfname, ""),
+                                           is_set=v_is_set, set_val=v_set_val))
                 sub_panels.append((f"{full_path} variant: {variant_cls.__name__}", vrows))
             continue
 
@@ -930,7 +982,7 @@ def _collect_help_panels(
             inner = _strip_annotated(annotation)
             non_none = [a for a in get_args(inner) if a is not type(None)]
             inner_cls = non_none[0]
-            child_rows, child_panels = _collect_help_panels(inner_cls, prefix=full_path)
+            child_rows, child_panels = _collect_help_panels(inner_cls, prefix=full_path, set_values=child_set)
             if isinstance(finfo.default, BaseModel):
                 tag = "optional, enabled by default"
             else:
@@ -945,7 +997,7 @@ def _collect_help_panels(
 
         inner = _strip_annotated(annotation)
         if isinstance(inner, type) and issubclass(inner, BaseModel):
-            child_rows, child_panels = _collect_help_panels(inner, prefix=full_path)
+            child_rows, child_panels = _collect_help_panels(inner, prefix=full_path, set_values=child_set)
             desc = _panel_description(inner, finfo, docstrings.get(fname, ""))
             title = f"{full_path}: {desc}" if desc else f"{full_path} options"
             sub_panels.append((title, child_rows))
@@ -962,8 +1014,9 @@ def _collect_help_panels(
             short = _field_short_flag(finfo)
             name = f"-{short}, --{full_path}" if short else f"--{full_path}"
             flag = f"{name} {type_str}" if type_str else name
-            rows.append(_make_row(flag, finfo, docstrings.get(fname, "")))
-            child_rows, child_panels = _collect_help_panels(item_cls, prefix=f"{full_path}[*]")
+            rows.append(_make_row(flag, finfo, docstrings.get(fname, ""),
+                                  is_set=field_is_set, set_val=field_set_val))
+            child_rows, child_panels = _collect_help_panels(item_cls, prefix=f"{full_path}[*]", set_values={})
             tag = "list item" if list_model else "dict value"
             desc = _panel_description(item_cls, finfo, docstrings.get(fname, ""))
             title = f"{full_path}[*]: {desc} ({tag}, via @ file or JSON)" if desc else f"{full_path}[*] fields ({tag}, via @ file or JSON)"
@@ -976,13 +1029,18 @@ def _collect_help_panels(
         short = _field_short_flag(finfo)
         name = f"-{short}, --{full_path}" if short else f"--{full_path}"
         flag = f"{name} {type_str}" if type_str else name
-        rows.append(_make_row(flag, finfo, docstrings.get(fname, "")))
+        rows.append(_make_row(flag, finfo, docstrings.get(fname, ""),
+                              is_set=field_is_set, set_val=field_set_val))
 
     return rows, sub_panels
 
 
 def _render_help(
-    cls: type, prog: str | None = None, description: str | None = None, wide: bool = True
+    cls: type,
+    prog: str | None = None,
+    description: str | None = None,
+    wide: bool = True,
+    set_values: dict | None = None,
 ) -> str:
     """Render the full ``--help`` text for ``cls`` as a single string.
 
@@ -992,13 +1050,18 @@ def _render_help(
     (annotated "(optional, default: None)"), and per multi-model union
     variant. Reuses ``_render_panel`` so all panels share the same
     box-drawing style.
+
+    ``set_values`` is an optional nested dict of values that have been
+    explicitly provided (merged CLI + config-file overrides). Set values
+    are shown at the top of each panel, separated from unset defaults by
+    a thin ``├─…─┤`` rule.
     """
     prog = prog or os.path.basename(sys.argv[0])
     term_width = _term_width(wide)
 
-    root_rows, sub_panels = _collect_help_panels(cls)
+    root_rows, sub_panels = _collect_help_panels(cls, set_values=set_values)
 
-    header_rows: list[_HelpRow] = [("-h, --help", "show this help message and exit", ""), *root_rows]
+    header_rows: list[_HelpRow] = [("-h, --help", "show this help message and exit", "", False), *root_rows]
     all_panels: list[_HelpPanel] = [("options", header_rows), *sub_panels]
 
     lines: list[str] = [f"usage: {prog} [-h] [@ FILE] [OPTIONS]"]
@@ -1649,10 +1712,11 @@ def cli(
             remaining_args, json_overrides = _extract_json_value_args(remaining_args, json_paths)
             cli_overrides = _deep_merge(cli_overrides, json_overrides)
 
-        # 3. --help is rendered directly from ``cls.model_fields``.
-        if "--help" in remaining_args or "-h" in remaining_args:
-            sys.stdout.write(_render_help(cls, prog=prog, description=description, wide=wide_resolved))
-            sys.exit(0)
+        # 3. Detect ``--help``/``-h`` early, but defer rendering until after
+        #    ``_parse_cli_to_dict`` so we know which flags the user has set.
+        wants_help = "--help" in remaining_args or "-h" in remaining_args
+        if wants_help:
+            remaining_args = [a for a in remaining_args if a not in ("-h", "--help")]
 
         # 4. Parse remaining ``--flag value`` / ``--flag=value`` tokens against the
         #    leaf paths of ``cls``. The parser handles bools (``--no-flag``), typed
@@ -1660,6 +1724,19 @@ def cli(
         #    unknown flags.
         remaining_args, flag_overrides = _parse_cli_to_dict(remaining_args, cls, optional_paths)
         cli_overrides = _deep_merge(cli_overrides, flag_overrides)
+
+        # 3b. Now render help with full knowledge of what the user provided.
+        if wants_help:
+            # Merge all layers so set_values reflects every explicit override.
+            default_dict: dict = {}
+            if default is not None and isinstance(default, BaseModel):
+                default_dict = default.model_dump(exclude_unset=True)
+            set_values = _deep_merge(_deep_merge(default_dict, toml_dict), cli_overrides)
+            sys.stdout.write(_render_help(
+                cls, prog=prog, description=description, wide=wide_resolved,
+                set_values=set_values,
+            ))
+            sys.exit(0)
 
         if remaining_args:
             raise ConfigFileError(
