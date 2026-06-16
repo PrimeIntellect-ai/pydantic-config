@@ -1041,6 +1041,7 @@ def _render_help(
     description: str | None = None,
     wide: bool = True,
     set_values: dict | None = None,
+    exclude_panels: list[str] | None = None,
 ) -> str:
     """Render the full ``--help`` text for ``cls`` as a single string.
 
@@ -1055,6 +1056,10 @@ def _render_help(
     explicitly provided (merged CLI + config-file overrides). Set values
     are shown at the top of each panel, separated from unset defaults by
     a thin ``├─…─┤`` rule.
+
+    ``exclude_panels`` is an optional list of title prefixes. Any sub-panel
+    whose title starts with one of these strings is silently omitted from the
+    output. The root "options" panel is never excluded.
     """
     prog = prog or os.path.basename(sys.argv[0])
     term_width = _term_width(wide)
@@ -1063,6 +1068,13 @@ def _render_help(
 
     header_rows: list[_HelpRow] = [("-h, --help", "show this help message and exit", "", False), *root_rows]
     all_panels: list[_HelpPanel] = [("options", header_rows), *sub_panels]
+
+    # Filter out excluded panels (the root "options" panel is always kept).
+    if exclude_panels:
+        all_panels = [
+            (title, rows) for title, rows in all_panels
+            if title == "options" or not any(title.startswith(prefix) for prefix in exclude_panels)
+        ]
 
     lines: list[str] = [f"usage: {prog} [-h] [@ FILE] [OPTIONS]"]
     if description:
@@ -1629,6 +1641,7 @@ def cli(
     description: str | None = None,
     plain: bool | None = None,
     wide: bool | None = None,
+    exclude_panels: list[str] | None = None,
 ) -> T:
     """
     Parse CLI arguments into a typed config object, with support for config files.
@@ -1648,6 +1661,9 @@ def cli(
             ``PYDANTIC_CONFIG_PLAIN`` (default: False).
         wide: Use full terminal width for help and error panels. Falls back
             to env var ``PYDANTIC_CONFIG_WIDE`` (default: True).
+        exclude_panels: Optional list of title prefixes. Sub-panels whose
+            title starts with any of these strings are omitted from
+            ``--help`` output. The root "options" panel is never excluded.
 
     Returns:
         Parsed and validated config object
@@ -1734,7 +1750,7 @@ def cli(
             set_values = _deep_merge(_deep_merge(default_dict, toml_dict), cli_overrides)
             sys.stdout.write(_render_help(
                 cls, prog=prog, description=description, wide=wide_resolved,
-                set_values=set_values,
+                set_values=set_values, exclude_panels=exclude_panels,
             ))
             sys.exit(0)
 
