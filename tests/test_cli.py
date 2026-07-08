@@ -1,10 +1,10 @@
 """Tests for the cli module."""
 
 import os
-from typing import Annotated
+from typing import Annotated, Literal
 
 import pytest
-from pydantic import Field
+from pydantic import AliasChoices, Field
 
 from pydantic_config import cli, BaseConfig, ConfigFileError
 from pydantic_config.cli import (
@@ -2405,6 +2405,197 @@ def test_list_of_models_with_class_docstring_in_panel(capsys):
     assert "RL environment settings." in out
 
 
+# Tests: environment variable overrides (env_prefix)
+
+
+class OptimAdamW(BaseConfig):
+    type: Literal["adamw"] = "adamw"
+    lr: float = 1e-4
+    weight_decay: float = 0.01
+
+
+class OptimMuon(BaseConfig):
+    type: Literal["muon"] = "muon"
+    lr: float = 1e-4
+    momentum: float = 0.95
+
+
+class EnvWandb(BaseConfig):
+    project: str = "prime"
+    tags: list[str] = []
+
+
+class EnvVarConfig(BaseConfig):
+    name: str = "default"
+    count: int = 0
+    verbose: bool = False
+    limit: int | None = None
+    optim: Annotated[OptimAdamW | OptimMuon, Field(discriminator="type")] = OptimAdamW()
+    wandb: EnvWandb | None = None
+    tags: list[str] = []
+    extra: dict = {}
+
+
+def test_env_var_applies_when_not_overridden(monkeypatch):
+    monkeypatch.setenv("PRL_NAME", "from-env")
+    config = cli(SimpleConfig, args=[], env_prefix="PRL")
+    assert config.name == "from-env"
+
+
+def test_env_var_nested_double_underscore(monkeypatch):
+    monkeypatch.setenv("PRL_MODEL__ENCODER__HIDDEN_SIZE", "512")
+    config = cli(DeepNestedConfig, args=[], env_prefix="PRL")
+    assert config.model.encoder.hidden_size == 512
+    assert config.model.decoder.hidden_size == 256
+
+
+def test_env_var_field_with_underscore(monkeypatch):
+    monkeypatch.setenv("PRL_TRAIN__BATCH_SIZE", "64")
+    config = cli(NestedConfig, args=[], env_prefix="PRL")
+    assert config.train.batch_size == 64
+
+
+def test_toml_overrides_env_var(tmp_toml_file, monkeypatch):
+    write_file(tmp_toml_file, 'name = "from-toml"')
+    monkeypatch.setenv("PRL_NAME", "from-env")
+    monkeypatch.setenv("PRL_COUNT", "5")
+    config = cli(SimpleConfig, args=["@", tmp_toml_file], env_prefix="PRL")
+    assert config.name == "from-toml"
+    assert config.count == 5
+
+
+def test_cli_overrides_env_var(monkeypatch):
+    monkeypatch.setenv("PRL_NAME", "from-env")
+    monkeypatch.setenv("PRL_COUNT", "5")
+    config = cli(SimpleConfig, args=["--name", "from-cli"], env_prefix="PRL")
+    assert config.name == "from-cli"
+    assert config.count == 5
+
+
+def test_env_var_overrides_caller_default(monkeypatch):
+    monkeypatch.setenv("PRL_NAME", "from-env")
+    config = cli(SimpleConfig, args=[], default=SimpleConfig(name="from-default"), env_prefix="PRL")
+    assert config.name == "from-env"
+
+
+def test_env_var_bool_literals(monkeypatch):
+    monkeypatch.setenv("PRL_VERBOSE", "1")
+    assert cli(EnvVarConfig, args=[], env_prefix="PRL").verbose is True
+    monkeypatch.setenv("PRL_VERBOSE", "false")
+    assert cli(EnvVarConfig, args=[], env_prefix="PRL").verbose is False
+
+
+def test_env_var_none_string(monkeypatch):
+    monkeypatch.setenv("PRL_LIMIT", "None")
+    config = cli(EnvVarConfig, args=[], env_prefix="PRL")
+    assert config.limit is None
+
+
+def test_env_var_list_json(monkeypatch):
+    monkeypatch.setenv("PRL_TAGS", '["a", "b"]')
+    config = cli(EnvVarConfig, args=[], env_prefix="PRL")
+    assert config.tags == ["a", "b"]
+
+
+def test_env_var_dict_json(monkeypatch):
+    monkeypatch.setenv("PRL_EXTRA", '{"k": 123}')
+    config = cli(EnvVarConfig, args=[], env_prefix="PRL")
+    assert config.extra == {"k": 123}
+
+
+def test_env_var_list_non_json_errors(monkeypatch):
+    monkeypatch.setenv("PRL_TAGS", "a,b")
+    with pytest.raises(ConfigFileError, match="PRL_TAGS"):
+        cli(EnvVarConfig, args=[], env_prefix="PRL")
+
+
+def test_env_prefix_off_by_default(monkeypatch):
+    monkeypatch.setenv("PRL_NAME", "from-env")
+    config = cli(SimpleConfig, args=[])
+    assert config.name == "default"
+
+
+def test_unrelated_prefixed_env_var_ignored(monkeypatch):
+    monkeypatch.setenv("PRL_TOTALLY_UNKNOWN", "1")
+    config = cli(SimpleConfig, args=[], env_prefix="PRL")
+    assert config.name == "default"
+
+
+def test_env_var_alias_field(monkeypatch):
+    class AliasConfig(BaseConfig):
+        seed: int = Field(42, validation_alias=AliasChoices("seed", "random_seed", "s"))
+
+    monkeypatch.setenv("PRL_RANDOM_SEED", "7")
+    assert cli(AliasConfig, args=[], env_prefix="PRL").seed == 7
+    monkeypatch.delenv("PRL_RANDOM_SEED")
+    monkeypatch.setenv("PRL_SEED", "8")
+    assert cli(AliasConfig, args=[], env_prefix="PRL").seed == 8
+    # Single-char aliases are CLI short flags, not env vars.
+    monkeypatch.delenv("PRL_SEED")
+    monkeypatch.setenv("PRL_S", "9")
+    assert cli(AliasConfig, args=[], env_prefix="PRL").seed == 42
+
+
+def test_env_var_alias_toml_spelling_beats_env_canonical(tmp_toml_file, monkeypatch):
+    class AliasConfig(BaseConfig):
+        seed: int = Field(42, validation_alias=AliasChoices("seed", "random_seed"))
+
+    write_file(tmp_toml_file, "random_seed = 1")
+    monkeypatch.setenv("PRL_SEED", "7")
+    config = cli(AliasConfig, args=["@", tmp_toml_file], env_prefix="PRL")
+    assert config.seed == 1
+
+
+def test_env_var_union_switch_variant(monkeypatch):
+    monkeypatch.setenv("PRL_OPTIM__TYPE", "muon")
+    config = cli(EnvVarConfig, args=[], env_prefix="PRL")
+    assert isinstance(config.optim, OptimMuon)
+
+
+def test_env_var_union_field_keeps_default_variant(monkeypatch):
+    monkeypatch.setenv("PRL_OPTIM__LR", "1e-3")
+    config = cli(EnvVarConfig, args=[], env_prefix="PRL")
+    assert isinstance(config.optim, OptimAdamW)
+    assert config.optim.lr == 1e-3
+
+
+def test_env_var_union_wrong_variant_field_errors(monkeypatch):
+    monkeypatch.setenv("PRL_OPTIM__MOMENTUM", "0.9")
+    with pytest.raises(ConfigFileError, match=r"PRL_OPTIM__MOMENTUM \(from env\)"):
+        cli(EnvVarConfig, args=[], env_prefix="PRL")
+
+
+def test_env_var_optional_submodel_field_enables(monkeypatch):
+    monkeypatch.setenv("PRL_WANDB__PROJECT", "envproj")
+    config = cli(EnvVarConfig, args=[], env_prefix="PRL")
+    assert config.wandb is not None
+    assert config.wandb.project == "envproj"
+
+
+def test_env_var_optional_none_disables(monkeypatch):
+    monkeypatch.setenv("PRL_WANDB", "None")
+    config = cli(EnvVarConfig, args=[], env_prefix="PRL")
+    assert config.wandb is None
+
+
+def test_env_var_bad_value_error_names_env_var(monkeypatch):
+    monkeypatch.setenv("PRL_COUNT", "not-an-int")
+    with pytest.raises(ConfigFileError, match=r"PRL_COUNT \(from env\)"):
+        cli(SimpleConfig, args=[], env_prefix="PRL")
+
+
+def test_env_var_error_not_attributed_when_overridden(monkeypatch):
+    monkeypatch.setenv("PRL_COUNT", "not-an-int")
+    config = cli(SimpleConfig, args=["--count", "3"], env_prefix="PRL")
+    assert config.count == 3
+
+
+def test_env_prefix_trailing_underscore(monkeypatch):
+    monkeypatch.setenv("PRL_NAME", "from-env")
+    config = cli(SimpleConfig, args=[], env_prefix="PRL_")
+    assert config.name == "from-env"
+
+
 # ---------------------------------------------------------------------------
 # README example integration tests
 # ---------------------------------------------------------------------------
@@ -2461,6 +2652,21 @@ def test_readme_config_file_with_cli_overrides(train_config_cls):
     assert config.seed == 0
     assert config.compile is None
     assert config.run_name == "demo-run"
+
+
+def test_readme_env_vars(train_config_cls, monkeypatch):
+    monkeypatch.setenv("TRAIN_SEED", "7")
+    monkeypatch.setenv("TRAIN_STUDENT__MODEL__HIDDEN_SIZE", "4096")
+    config = cli(train_config_cls, args=["--run-name", "r1"], env_prefix="TRAIN")
+    assert config.seed == 7
+    assert config.student.model.hidden_size == 4096
+
+    config = cli(train_config_cls, args=["--run-name", "r1", "--seed", "0"], env_prefix="TRAIN")
+    assert config.seed == 0
+
+    monkeypatch.setenv("TRAIN_OPTIMIZER__TYPE", "muon")
+    config = cli(train_config_cls, args=["--run-name", "r1"], env_prefix="TRAIN")
+    assert config.optimizer.type == "muon"
 
 
 def test_readme_required_field_error(train_config_cls):

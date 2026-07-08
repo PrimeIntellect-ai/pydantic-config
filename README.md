@@ -52,7 +52,7 @@ uv run python examples/train.py --help
 ### Config files via `@`
 
 Load a whole config from a TOML, YAML, or JSON file. CLI args layered on top
-always win — same precedence as `default` < file < CLI.
+always win — same precedence as `default` < env < file < CLI.
 
 ```bash
 uv run python examples/train.py @ examples/train.toml
@@ -63,6 +63,26 @@ uv run python examples/train.py @ examples/train.toml --seed 0 --no-model.compil
 <p align="center">
   <img src="assets/config_file.svg" alt="Config file via @" width="700">
 </p>
+
+### Environment variables
+
+Pass `env_prefix` to `cli()` and every field becomes settable via
+`<PREFIX>_<PATH>`, where nesting levels are joined with a double underscore
+(field names keep their own single underscores). Precedence:
+CLI > config file > environment > class default. Only variables matching a
+real field are read — unrelated `TRAIN_*` variables are ignored. List/dict
+fields take JSON literals, `None` disables an optional sub-config, and a
+discriminated union can be switched via its `TYPE`.
+
+```python
+config = cli(Config, env_prefix="TRAIN")
+```
+
+```bash
+TRAIN_SEED=7 TRAIN_STUDENT__MODEL__HIDDEN_SIZE=4096 uv run python examples/train.py --run-name r1
+TRAIN_SEED=7 uv run python examples/train.py --run-name r1 --seed 0   # CLI wins: seed=0
+TRAIN_OPTIMIZER__TYPE=muon uv run python examples/train.py --run-name r1
+```
 
 ### Required fields
 

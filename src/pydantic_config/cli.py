@@ -352,8 +352,28 @@ def _suggest_flag(unknown: str, known: list[str], n: int = 1) -> list[str]:
     return difflib.get_close_matches(unknown, known, n=n, cutoff=0.6)
 
 
+def _env_var_for_loc(loc: tuple, env_locs: dict[tuple[str, ...], str]) -> str | None:
+    """Find the env var that supplied the value at ``loc``, if any.
+
+    Exact match on the str segments first; then retry with one interior
+    segment dropped, because a discriminated-union error loc carries the
+    variant tag (``("optimizer", "adamw", "momentum")``) that the injected
+    env path (``("optimizer", "momentum")``) doesn't have.
+    """
+    parts = tuple(s for s in loc if isinstance(s, str))
+    if parts in env_locs:
+        return env_locs[parts]
+    for i in range(1, len(parts) - 1):
+        candidate = parts[:i] + parts[i + 1 :]
+        if candidate in env_locs:
+            return env_locs[candidate]
+    return None
+
+
 def _format_validation_error_for_cli(
-    error: ValidationError, known_flags: list[str] | None = None
+    error: ValidationError,
+    known_flags: list[str] | None = None,
+    env_locs: dict[tuple[str, ...], str] | None = None,
 ) -> str:
     """Render a ``pydantic.ValidationError`` as a CLI-flag-flavoured multi-line
     message suitable for ``_print_config_error_and_exit``.
@@ -364,7 +384,9 @@ def _format_validation_error_for_cli(
     real culprit.
 
     When ``known_flags`` is provided, "extra fields not permitted" errors
-    get a "did you mean --X?" suggestion via ``difflib``.
+    get a "did you mean --X?" suggestion via ``difflib``. When ``env_locs``
+    marks a loc as env-var-supplied, the row is headed by the env var name
+    (``PRL_FOO__BAR (from env)``) instead of a CLI flag.
     """
     errors = error.errors()
     count = len(errors)
@@ -373,6 +395,10 @@ def _format_validation_error_for_cli(
     for err in errors:
         loc = err.get("loc", ())
         flag = _loc_to_cli_flag(tuple(loc))
+        if env_locs:
+            env_var = _env_var_for_loc(tuple(loc), env_locs)
+            if env_var is not None:
+                flag = f"{env_var} (from env)"
         msg = err.get("msg") or err.get("type", "validation error")
         input_value = err.get("input")
         suffix = ""
@@ -1346,6 +1372,131 @@ def _set_nested(out: dict, snake_path: str, value: Any) -> None:
     node[parts[-1]] = value
 
 
+class _EnvVarMeta(typing.NamedTuple):
+    snake_path: str  # dotted snake_case path using canonical (post-alias) keys
+    annotation: object
+    is_bool: bool
+    is_json: bool  # dict/list-typed field — value must be a JSON literal
+
+
+def _field_env_names(field_name: str, field_info) -> tuple[list[str], str]:
+    """Accepted spellings for a field in env-var names, plus its canonical key.
+
+    Multi-character ``validation_alias`` entries each get their own env name;
+    single-character aliases are CLI short flags and don't make sense as env
+    vars. All spellings inject under the canonical key (the first
+    ``AliasChoices`` entry, matching ``_canonical_key_map``) so the alias
+    normalization pass keeps env below TOML/CLI in precedence.
+    """
+    names = [field_name]
+    canonical = field_name
+    alias = field_info.validation_alias
+    if isinstance(alias, AliasChoices):
+        choices = [c for c in alias.choices if isinstance(c, str)]
+        if choices:
+            canonical = choices[0]
+            names = list(dict.fromkeys([field_name, *choices]))
+    elif isinstance(alias, str):
+        canonical = alias
+        names = list(dict.fromkeys([field_name, alias]))
+    return [n for n in names if len(n) > 1 or n == field_name], canonical
+
+
+def _build_env_var_map(cls: type, env_prefix: str = "", snake_prefix: str = "") -> dict[str, _EnvVarMeta]:
+    """Walk ``cls.model_fields`` to build an env-var-name → ``_EnvVarMeta`` map.
+
+    Names are UPPER_SNAKE path segments joined with a double underscore
+    (``trainer.model.seq_len`` → ``TRAINER__MODEL__SEQ_LEN``); field names keep
+    their own single underscores, so ``__`` is unambiguous as the level
+    delimiter (a field name itself containing ``__`` would collide). The map is
+    what makes lookup model-driven: only variables matching a real field are
+    ever read, so unrelated ``<PREFIX>_*`` variables in the environment are
+    ignored.
+
+    Unlike ``_build_field_meta_map`` this recurses into ``Optional[BaseModel]``
+    fields (the field also stays addressable as a leaf so ``PREFIX_WANDB=None``
+    can disable it) and into every variant of a discriminated union (the
+    discriminator picks the variant at validation; setting a field of the
+    non-selected variant fails validation the same way a TOML key would).
+    """
+    entries: dict[str, _EnvVarMeta] = {}
+    if not hasattr(cls, "model_fields"):
+        return entries
+
+    for field_name, field_info in cls.model_fields.items():
+        annotation = field_info.annotation
+        names, canonical = _field_env_names(field_name, field_info)
+        snake_path = f"{snake_prefix}.{canonical}" if snake_prefix else canonical
+        env_names = [f"{env_prefix}__{n.upper()}" if env_prefix else n.upper() for n in names]
+
+        inner = _strip_annotated(annotation)
+        if _is_json_value_field(annotation):
+            for env_name in env_names:
+                entries[env_name] = _EnvVarMeta(snake_path, annotation, is_bool=False, is_json=True)
+        elif isinstance(inner, type) and issubclass(inner, BaseModel):
+            for env_name in env_names:
+                entries.update(_build_env_var_map(inner, env_name, snake_path))
+        elif _is_optional_model(annotation) or _is_multi_model_union(annotation):
+            models = [a for a in get_args(inner) if a is not type(None)]
+            for env_name in env_names:
+                if len(models) < len(get_args(inner)):  # None allowed → settable as a leaf
+                    entries[env_name] = _EnvVarMeta(snake_path, annotation, is_bool=False, is_json=False)
+                for model in models:
+                    entries.update(_build_env_var_map(model, env_name, snake_path))
+        else:
+            for env_name in env_names:
+                entries[env_name] = _EnvVarMeta(
+                    snake_path, annotation, is_bool=_annotation_is_bool(annotation), is_json=False
+                )
+
+    return entries
+
+
+def _collect_env_overrides(cls: type, env_prefix: str) -> tuple[dict, dict[tuple[str, ...], str]]:
+    """Read ``<PREFIX>_<PATH>`` environment variables into a nested override dict.
+
+    Returns the dict plus an attribution map (snake-path tuple → env var name)
+    used to point validation errors at the env var instead of a CLI flag.
+    """
+    prefix = env_prefix.rstrip("_")
+    overrides: dict = {}
+    locs: dict[tuple[str, ...], str] = {}
+    for name, meta in _build_env_var_map(cls).items():
+        full_name = f"{prefix}_{name}"
+        raw = os.environ.get(full_name)
+        if raw is None:
+            continue
+        value: Any = raw
+        if meta.is_bool:
+            coerced = _coerce_bool_literal(raw)
+            if coerced is not None:
+                value = coerced
+        elif meta.is_json:
+            stripped = raw.strip()
+            if not stripped.startswith(("{", "[")):
+                raise ConfigFileError(
+                    f"Invalid value for environment variable {full_name}: "
+                    f"list/dict fields take a JSON literal, e.g. '[1,2]' (got {raw!r})"
+                )
+            try:
+                value = json.loads(stripped)
+            except json.JSONDecodeError as e:
+                raise ConfigFileError(f"Invalid JSON in environment variable {full_name}: {e}")
+        _set_nested(overrides, meta.snake_path, value)
+        locs[tuple(meta.snake_path.split("."))] = full_name
+    return overrides, locs
+
+
+def _path_present(data: dict, parts: tuple[str, ...]) -> bool:
+    """``True`` if ``parts`` names an existing path inside nested dict ``data``."""
+    node: Any = data
+    for part in parts:
+        if not isinstance(node, dict) or part not in node:
+            return False
+        node = node[part]
+    return True
+
+
 def _parse_cli_to_dict(
     args: list[str], cls: type, optional_paths: set[str]
 ) -> tuple[list[str], dict]:
@@ -1542,19 +1693,19 @@ def _normalize_alias_keys(cls: type, data: Any) -> Any:
 
 
 @overload
-def cli(cls: type[T]) -> T: ...
+def cli(cls: type[T], *, env_prefix: str | None = ...) -> T: ...
 
 
 @overload
-def cli(cls: type[T], *, args: list[str]) -> T: ...
+def cli(cls: type[T], *, args: list[str], env_prefix: str | None = ...) -> T: ...
 
 
 @overload
-def cli(cls: type[T], *, default: T) -> T: ...
+def cli(cls: type[T], *, default: T, env_prefix: str | None = ...) -> T: ...
 
 
 @overload
-def cli(cls: type[T], *, args: list[str], default: T) -> T: ...
+def cli(cls: type[T], *, args: list[str], default: T, env_prefix: str | None = ...) -> T: ...
 
 
 def cli(
@@ -1562,6 +1713,7 @@ def cli(
     *,
     args: list[str] | None = None,
     default: T | None = None,
+    env_prefix: str | None = None,
     prog: str | None = None,
     description: str | None = None,
     plain: bool | None = None,
@@ -1579,6 +1731,11 @@ def cli(
         cls: The type to parse into (Pydantic BaseConfig or BaseModel)
         args: Command line args to parse (defaults to sys.argv[1:])
         default: Default instance to use for missing values
+        env_prefix: Enable environment-variable overrides under this prefix.
+            Every field becomes settable via ``<PREFIX>_<PATH>``, where nesting
+            levels are joined with a double underscore, e.g. ``env_prefix="PRL"``
+            makes ``PRL_TRAINER__MODEL__SEQ_LEN`` set ``trainer.model.seq_len``.
+            Precedence: CLI > config file > env var > ``default`` > class default.
         prog: Program name for help text
         description: Description for help text
         plain: Disable colored output. Falls back to env var
@@ -1671,13 +1828,28 @@ def cli(
         known_flags = sorted(known_leaves.keys())
 
         # 5. Compose the precedence layers and validate once. Order:
-        #    caller default  ⊂  TOML/@-file  ⊂  CLI overrides.
+        #    caller default  ⊂  env vars  ⊂  TOML/@-file  ⊂  CLI overrides.
         #    Validators on ``cls`` fire exactly once on the merged dict, so
         #    ``model_fields_set`` faithfully records what the user wrote.
         default_dict: dict = {}
         if default is not None and isinstance(default, BaseModel):
             default_dict = default.model_dump(exclude_unset=True)
-        merged = _deep_merge(_deep_merge(default_dict, toml_dict), cli_overrides)
+        env_dict: dict = {}
+        env_locs: dict[tuple[str, ...], str] = {}
+        if env_prefix:
+            env_dict, env_locs = _collect_env_overrides(cls, env_prefix)
+        if env_locs:
+            # Attribute errors to an env var only where the env value is what
+            # survived the merge; compare on canonical keys since TOML/CLI may
+            # spell the field via an alias.
+            norm_toml = _normalize_alias_keys(cls, toml_dict)
+            norm_cli = _normalize_alias_keys(cls, cli_overrides)
+            env_locs = {
+                path: name
+                for path, name in env_locs.items()
+                if not (_path_present(norm_toml, path) or _path_present(norm_cli, path))
+            }
+        merged = _deep_merge(_deep_merge(_deep_merge(default_dict, env_dict), toml_dict), cli_overrides)
         # Collapse ``validation_alias`` duplicates so e.g. ``seed`` (TOML) +
         # ``random_seed`` (CLI alias) merge into a single canonical key.
         merged = _normalize_alias_keys(cls, merged)
@@ -1688,7 +1860,7 @@ def cli(
             # see ``--foo: Input should be a valid integer (got 'dskfj')`` rather
             # than a raw pydantic_core traceback.
             raise ConfigFileError(
-                _format_validation_error_for_cli(e, known_flags=known_flags)
+                _format_validation_error_for_cli(e, known_flags=known_flags, env_locs=env_locs)
             ) from e
     except ConfigFileError as e:
         # Only print formatted error when running from CLI (sys.argv);

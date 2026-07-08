@@ -8,6 +8,7 @@ Try it:
     python examples/train.py --help
     python examples/train.py @ examples/train.toml
     python examples/train.py @ examples/train.toml --seed 0 --no-model.compile
+    TRAIN_SEED=7 python examples/train.py --run-name r1
 """
 
 from pathlib import Path
@@ -149,4 +150,4 @@ def main(config: Config):
 
 
 if __name__ == "__main__":
-    main(cli(Config))
+    main(cli(Config, env_prefix="TRAIN"))
