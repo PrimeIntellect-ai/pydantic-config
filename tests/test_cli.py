@@ -2578,6 +2578,19 @@ def test_env_var_optional_none_disables(monkeypatch):
     assert config.wandb is None
 
 
+def test_env_var_optional_true_enables_with_defaults(monkeypatch):
+    monkeypatch.setenv("PRL_WANDB", "true")
+    config = cli(EnvVarConfig, args=[], env_prefix="PRL")
+    assert config.wandb is not None
+    assert config.wandb.project == "prime"
+
+
+def test_env_var_optional_false_disables(monkeypatch):
+    monkeypatch.setenv("PRL_WANDB", "false")
+    config = cli(EnvVarConfig, args=[], env_prefix="PRL")
+    assert config.wandb is None
+
+
 def test_env_var_bad_value_error_names_env_var(monkeypatch):
     monkeypatch.setenv("PRL_COUNT", "not-an-int")
     with pytest.raises(ConfigFileError, match=r"PRL_COUNT \(from env\)"):

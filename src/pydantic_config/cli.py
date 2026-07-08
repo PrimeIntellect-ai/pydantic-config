@@ -1377,6 +1377,7 @@ class _EnvVarMeta(typing.NamedTuple):
     annotation: object
     is_bool: bool
     is_json: bool  # dict/list-typed field — value must be a JSON literal
+    is_model: bool = False  # nullable model field addressed as a leaf (enable/disable)
 
 
 def _field_env_names(field_name: str, field_info) -> tuple[list[str], str]:
@@ -1440,7 +1441,7 @@ def _build_env_var_map(cls: type, env_prefix: str = "", snake_prefix: str = "") 
             models = [a for a in get_args(inner) if a is not type(None)]
             for env_name in env_names:
                 if len(models) < len(get_args(inner)):  # None allowed → settable as a leaf
-                    entries[env_name] = _EnvVarMeta(snake_path, annotation, is_bool=False, is_json=False)
+                    entries[env_name] = _EnvVarMeta(snake_path, annotation, is_bool=False, is_json=False, is_model=True)
                 for model in models:
                     entries.update(_build_env_var_map(model, env_name, snake_path))
         else:
@@ -1471,6 +1472,14 @@ def _collect_env_overrides(cls: type, env_prefix: str) -> tuple[dict, dict[tuple
             coerced = _coerce_bool_literal(raw)
             if coerced is not None:
                 value = coerced
+        elif meta.is_model:
+            # Mirror the CLI's semantics for nullable model fields: true is the
+            # bare --flag (enable with defaults), false is --no-flag (disable).
+            coerced = _coerce_bool_literal(raw)
+            if coerced is True:
+                value = {}
+            elif coerced is False:
+                value = "None"
         elif meta.is_json:
             stripped = raw.strip()
             if not stripped.startswith(("{", "[")):

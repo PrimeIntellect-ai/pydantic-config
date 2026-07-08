@@ -71,8 +71,9 @@ Pass `env_prefix` to `cli()` and every field becomes settable via
 (field names keep their own single underscores). Precedence:
 CLI > config file > environment > class default. Only variables matching a
 real field are read — unrelated `TRAIN_*` variables are ignored. List/dict
-fields take JSON literals, `None` disables an optional sub-config, and a
-discriminated union can be switched via its `TYPE`.
+fields take JSON literals; an optional sub-config is enabled with defaults via
+`true` (the bare `--flag`) and disabled via `None` or `false` (`--no-flag`);
+a discriminated union can be switched via its `TYPE`.
 
 ```python
 config = cli(Config, env_prefix="TRAIN")
