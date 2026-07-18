@@ -1,6 +1,6 @@
 [project]
 name = "prime-pydantic-config"
-version = "0.3.0"
+version = "0.4.0"
 description = "Pydantic-driven CLI with TOML/YAML config file support for ML"
 authors = [
     { name = "Sami Jaghouar", email = "sami.jaghouar@gmail.com" }
