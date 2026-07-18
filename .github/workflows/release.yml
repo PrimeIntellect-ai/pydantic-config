@@ -14,6 +14,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -21,15 +23,8 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Verify tag matches pyproject version
-        run: |
-          tag="${GITHUB_REF_NAME#v}"
-          pkg_version=$(uv run --with tomli python -c "import tomli; print(tomli.load(open('pyproject.toml','rb'))['project']['version'])")
-          if [ "$tag" != "$pkg_version" ]; then
-            echo "Tag $tag does not match pyproject version $pkg_version" >&2
-            exit 1
-          fi
-
+      # hatch-vcs derives the version from the pushed `vX.Y.Z` tag, so the built
+      # artifacts are guaranteed to match the tag — no separate check needed.
       - name: Build
         run: uv build
 
