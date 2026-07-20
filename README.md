@@ -46,7 +46,7 @@ uv run python examples/train.py --help
 ```
 
 <p align="center">
-  <img src="assets/help.svg" alt="Help output" width="700">
+  <img src="https://raw.githubusercontent.com/PrimeIntellect-ai/pydantic-config/main/assets/help.svg" alt="Help output" width="700">
 </p>
 
 ### Config files via `@`
@@ -61,7 +61,7 @@ uv run python examples/train.py @ examples/train.toml --seed 0 --no-model.compil
 ```
 
 <p align="center">
-  <img src="assets/config_file.svg" alt="Config file via @" width="700">
+  <img src="https://raw.githubusercontent.com/PrimeIntellect-ai/pydantic-config/main/assets/config_file.svg" alt="Config file via @" width="700">
 </p>
 
 ### Required fields
@@ -74,7 +74,7 @@ uv run python examples/train.py   # errors: --run-name is required
 ```
 
 <p align="center">
-  <img src="assets/required_error.svg" alt="Missing required argument" width="700">
+  <img src="https://raw.githubusercontent.com/PrimeIntellect-ai/pydantic-config/main/assets/required_error.svg" alt="Missing required argument" width="700">
 </p>
 
 ### Nested config groups
@@ -87,7 +87,7 @@ uv run python examples/train.py --run-name r1 --model.hidden-size 4096 --data.nu
 ```
 
 <p align="center">
-  <img src="assets/nested.svg" alt="Nested config groups" width="700">
+  <img src="https://raw.githubusercontent.com/PrimeIntellect-ai/pydantic-config/main/assets/nested.svg" alt="Nested config groups" width="700">
 </p>
 
 ### Bool flags and `--no-` negation
@@ -100,7 +100,7 @@ uv run python examples/train.py --run-name r1 --no-compile.fullgraph --no-data.s
 ```
 
 <p align="center">
-  <img src="assets/bool_negation.svg" alt="Bool --no- negation" width="700">
+  <img src="https://raw.githubusercontent.com/PrimeIntellect-ai/pydantic-config/main/assets/bool_negation.svg" alt="Bool --no- negation" width="700">
 </p>
 
 ### Lists
@@ -114,7 +114,7 @@ uv run python examples/train.py --run-name r1 --checkpoint-steps '[100, 200, 500
 ```
 
 <p align="center">
-  <img src="assets/lists.svg" alt="List values" width="700">
+  <img src="https://raw.githubusercontent.com/PrimeIntellect-ai/pydantic-config/main/assets/lists.svg" alt="List values" width="700">
 </p>
 
 ### Dicts
@@ -127,7 +127,7 @@ uv run python examples/train.py --run-name r1 --extra-kwargs '{"seq_len": 4096}'
 ```
 
 <p align="center">
-  <img src="assets/dicts.svg" alt="Dict values" width="700">
+  <img src="https://raw.githubusercontent.com/PrimeIntellect-ai/pydantic-config/main/assets/dicts.svg" alt="Dict values" width="700">
 </p>
 
 ### Optional sub-configs
@@ -143,7 +143,7 @@ uv run python examples/train.py --run-name r1 --wandb @ examples/wandb.toml     
 ```
 
 <p align="center">
-  <img src="assets/optional.svg" alt="Optional sub-config" width="700">
+  <img src="https://raw.githubusercontent.com/PrimeIntellect-ai/pydantic-config/main/assets/optional.svg" alt="Optional sub-config" width="700">
 </p>
 
 ### Disabling an optional sub-config
@@ -160,7 +160,7 @@ uv run python examples/train.py --run-name r1 --wandb @ examples/wandb.toml --no
 ```
 
 <p align="center">
-  <img src="assets/disable_optional.svg" alt="Disable optional sub-config" width="700">
+  <img src="https://raw.githubusercontent.com/PrimeIntellect-ai/pydantic-config/main/assets/disable_optional.svg" alt="Disable optional sub-config" width="700">
 </p>
 
 ### Discriminated unions
@@ -176,7 +176,7 @@ uv run python examples/train.py --run-name r1 --optimizer @ examples/optimizer.t
 ```
 
 <p align="center">
-  <img src="assets/union_switch.svg" alt="Discriminated union" width="700">
+  <img src="https://raw.githubusercontent.com/PrimeIntellect-ai/pydantic-config/main/assets/union_switch.svg" alt="Discriminated union" width="700">
 </p>
 
 ### Validation aliases
@@ -193,7 +193,7 @@ uv run python examples/train.py @ examples/train.toml --seed 99    # TOML alias 
 ```
 
 <p align="center">
-  <img src="assets/alias.svg" alt="Validation alias" width="700">
+  <img src="https://raw.githubusercontent.com/PrimeIntellect-ai/pydantic-config/main/assets/alias.svg" alt="Validation alias" width="700">
 </p>
 
 ### Single-dash short flags
@@ -326,7 +326,7 @@ uv run python examples/train.py --run-name r1 --seed nope
 ```
 
 <p align="center">
-  <img src="assets/config_error.svg" alt="Config validation error" width="700">
+  <img src="https://raw.githubusercontent.com/PrimeIntellect-ai/pydantic-config/main/assets/config_error.svg" alt="Config validation error" width="700">
 </p>
 
 ### Unknown flags get a suggestion
@@ -338,7 +338,7 @@ uv run python examples/train.py --run-name r1 --seedz 5   # -> did you mean --se
 ```
 
 <p align="center">
-  <img src="assets/unknown_flag.svg" alt="Unknown flag suggestion" width="700">
+  <img src="https://raw.githubusercontent.com/PrimeIntellect-ai/pydantic-config/main/assets/unknown_flag.svg" alt="Unknown flag suggestion" width="700">
 </p>
 
 ### Config file not found
@@ -348,7 +348,7 @@ uv run python examples/train.py @ nonexistent.toml
 ```
 
 <p align="center">
-  <img src="assets/file_not_found.svg" alt="Config file not found" width="700">
+  <img src="https://raw.githubusercontent.com/PrimeIntellect-ai/pydantic-config/main/assets/file_not_found.svg" alt="Config file not found" width="700">
 </p>
 
 ## Development
