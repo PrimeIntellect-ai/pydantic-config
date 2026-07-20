@@ -1,6 +1,6 @@
 [project]
 name = "prime-pydantic-config"
-version = "0.4.0"
+dynamic = ["version"]  # derived from git tags via hatch-vcs
 description = "Pydantic-driven CLI with TOML/YAML config file support for ML"
 authors = [
     { name = "Sami Jaghouar", email = "sami.jaghouar@gmail.com" }
@@ -17,8 +17,34 @@ Repository = "https://github.com/PrimeIntellect-ai/pydantic-config"
 Issues = "https://github.com/PrimeIntellect-ai/pydantic-config/issues"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+# Versioning is git-driven via hatch-vcs:
+# - Pushing a `vX.Y.Z` tag builds that exact stable release.
+# - Every other build (e.g. each push to main) derives the *next* release's
+#   pre-release: the last `vX.Y.Z` tag with its final segment bumped, plus
+#   `.dev<N>` where N = commits since that tag (e.g. after `v0.4.0` →
+#   `0.4.1.dev<N>`). No per-commit tags are created.
+[tool.hatch.version]
+source = "vcs"
+# Resolve a version when building without VCS metadata (e.g. an sdist that
+# ships no .git); without it hatch-vcs raises LookupError.
+fallback-version = "0.0.0"
+
+[tool.hatch.version.raw-options]
+# PyPI rejects local version segments, so strip the `+g<hash>` suffix.
+local_scheme = "no-local-version"
+git_describe_command = [
+    "git",
+    "describe",
+    "--tags",
+    "--long",
+    "--match",
+    "v[0-9]*.[0-9]*.[0-9]*",
+    "--exclude",
+    "*dev*",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pydantic_config"]

@@ -26,16 +26,14 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Set dev version
-        run: |
-          base=$(uv run --with tomli python -c "import tomli; print(tomli.load(open('pyproject.toml','rb'))['project']['version'])")
-          n=$(git rev-list --count HEAD)
-          dev_version="${base}.dev${n}"
-          echo "Publishing $dev_version"
-          sed -i -E "0,/^version = \"[^\"]+\"/s//version = \"${dev_version}\"/" pyproject.toml
-
+      # Version is derived from git tags by hatch-vcs: the last `vX.Y.Z` tag
+      # with its final segment bumped, plus `.dev<N>` (N = commits since the
+      # tag). E.g. after `v0.4.0` this publishes `0.4.1.dev<N>`.
       - name: Build
         run: uv build
+
+      - name: Show derived version
+        run: ls -1 dist/
 
       - name: Publish to PyPI
         run: uv publish --trusted-publishing always

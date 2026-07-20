@@ -157,7 +157,6 @@ wheels = [
 
 [[package]]
 name = "prime-pydantic-config"
-version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
@@ -191,7 +190,7 @@ requires-dist = [
     { name = "tomli", marker = "extra == 'all'" },
     { name = "tomli", marker = "extra == 'toml'" },
 ]
-provides-extras = ["yaml", "toml", "all"]
+provides-extras = ["all", "toml", "yaml"]
 
 [package.metadata.requires-dev]
 dev = [
