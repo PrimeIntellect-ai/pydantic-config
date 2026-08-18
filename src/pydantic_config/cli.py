@@ -1500,6 +1500,31 @@ def _canonical_key_map(cls: type) -> dict[str, str]:
     return mapping
 
 
+def _field_inner_models(finfo) -> list[type]:
+    """Every ``BaseModel`` class reachable through a field: the model itself,
+    the inner model of ``Optional[Model]``, or all variants of a (discriminated)
+    model union."""
+    inner = _strip_annotated(finfo.annotation)
+    if isinstance(inner, type) and issubclass(inner, BaseModel):
+        return [inner]
+    if _is_union(inner):
+        return [a for a in get_args(inner) if isinstance(a, type) and issubclass(a, BaseModel)]
+    return []
+
+
+def _select_union_variant(variants: list[type], finfo, value: dict) -> type | None:
+    """The variant ``value`` will validate against, picked by its discriminator
+    tag. ``None`` when the tag is absent (e.g. the field's default variant) or
+    unmatched — the caller then has to consider every variant."""
+    discriminator = finfo.discriminator
+    if isinstance(discriminator, str) and discriminator in value:
+        for variant in variants:
+            vinfo = variant.model_fields.get(discriminator)
+            if vinfo is not None and vinfo.default == value[discriminator]:
+                return variant
+    return None
+
+
 def _normalize_alias_keys(cls: type, data: Any) -> Any:
     """Recursively rewrite alias keys in ``data`` to their canonical form.
 
@@ -1515,28 +1540,35 @@ def _normalize_alias_keys(cls: type, data: Any) -> Any:
 
     key_map = _canonical_key_map(cls)
 
-    # Map every accepted key (canonical + aliases) to its inner BaseModel,
-    # used to recurse into nested groups while normalizing.
-    inner_map: dict[str, type] = {}
+    # Map every accepted key (canonical + aliases) to its field info, used to
+    # recurse into nested groups — plain models, Optional models, and union
+    # variants — while normalizing.
+    field_map: dict[str, Any] = {}
     for field_name, finfo in cls.model_fields.items():
-        inner = _strip_annotated(finfo.annotation)
-        if not (isinstance(inner, type) and issubclass(inner, BaseModel)):
-            continue
-        inner_map[field_name] = inner
+        field_map[field_name] = finfo
         alias = finfo.validation_alias
         if isinstance(alias, AliasChoices):
             for c in alias.choices:
                 if isinstance(c, str):
-                    inner_map[c] = inner
+                    field_map[c] = finfo
         elif isinstance(alias, str):
-            inner_map[alias] = inner
+            field_map[alias] = finfo
 
     result: dict = {}
     for key, value in data.items():
         canonical = key_map.get(key, key)
-        inner_cls = inner_map.get(key)
-        if inner_cls is not None and isinstance(value, dict):
-            value = _normalize_alias_keys(inner_cls, value)
+        finfo = field_map.get(key)
+        if finfo is not None and isinstance(value, dict):
+            models = _field_inner_models(finfo)
+            if len(models) == 1:
+                value = _normalize_alias_keys(models[0], value)
+            elif len(models) > 1:
+                # Without a discriminator tag in the data the target variant is
+                # unknown, so normalize under every variant's alias map — alias
+                # names are variant-specific, so unrelated variants are no-ops.
+                variant = _select_union_variant(models, finfo, value)
+                for model in [variant] if variant is not None else models:
+                    value = _normalize_alias_keys(model, value)
         result[canonical] = value
     return result
 

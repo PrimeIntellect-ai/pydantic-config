@@ -1822,6 +1822,99 @@ def test_alias_toml_and_cli_mixed(tmp_path):
     assert config.seed == 99
 
 
+def test_alias_in_union_variant_toml_alias_cli_canonical(tmp_path):
+    """CLI-over-file precedence must hold when the file uses the alias and the
+    CLI the canonical name, for a field inside a discriminated-union variant."""
+    from typing import Annotated, Literal, Union
+
+    from pydantic import AliasChoices
+
+    class Single(BaseConfig):
+        type: Literal["single"] = "single"
+        num_infer_gpus: int = Field(1, validation_alias=AliasChoices("num_infer_gpus", "num_eval_gpus"))
+
+    class Multi(BaseConfig):
+        type: Literal["multi"] = "multi"
+        num_infer_nodes: int = Field(0, validation_alias=AliasChoices("num_infer_nodes", "num_eval_nodes"))
+
+    class C(BaseConfig):
+        deployment: Annotated[Union[Single, Multi], Field(discriminator="type")] = Single()
+
+    f = tmp_path / "c.toml"
+    f.write_text("[deployment]\nnum_eval_gpus = 7\n")
+
+    config = cli(C, args=["@", str(f), "--deployment.num-infer-gpus", "2"])
+    assert isinstance(config.deployment, Single)
+    assert config.deployment.num_infer_gpus == 2
+
+    config = cli(C, args=["@", str(f), "--deployment.num-eval-gpus", "3"])
+    assert config.deployment.num_infer_gpus == 3
+
+
+def test_alias_in_union_variant_toml_canonical_cli_alias(tmp_path):
+    from typing import Annotated, Literal, Union
+
+    from pydantic import AliasChoices
+
+    class Single(BaseConfig):
+        type: Literal["single"] = "single"
+        num_infer_gpus: int = Field(1, validation_alias=AliasChoices("num_infer_gpus", "num_eval_gpus"))
+
+    class Multi(BaseConfig):
+        type: Literal["multi"] = "multi"
+        num_infer_nodes: int = Field(0, validation_alias=AliasChoices("num_infer_nodes", "num_eval_nodes"))
+
+    class C(BaseConfig):
+        deployment: Annotated[Union[Single, Multi], Field(discriminator="type")] = Single()
+
+    f = tmp_path / "c.toml"
+    f.write_text("[deployment]\nnum_infer_gpus = 7\n")
+
+    config = cli(C, args=["@", str(f), "--deployment.num-eval-gpus", "2"])
+    assert config.deployment.num_infer_gpus == 2
+
+
+def test_alias_in_union_variant_with_discriminator_tag(tmp_path):
+    from typing import Annotated, Literal, Union
+
+    from pydantic import AliasChoices
+
+    class Single(BaseConfig):
+        type: Literal["single"] = "single"
+        num_infer_gpus: int = Field(1, validation_alias=AliasChoices("num_infer_gpus", "num_eval_gpus"))
+
+    class Multi(BaseConfig):
+        type: Literal["multi"] = "multi"
+        num_infer_nodes: int = Field(0, validation_alias=AliasChoices("num_infer_nodes", "num_eval_nodes"))
+
+    class C(BaseConfig):
+        deployment: Annotated[Union[Single, Multi], Field(discriminator="type")] = Single()
+
+    f = tmp_path / "c.toml"
+    f.write_text('[deployment]\ntype = "multi"\nnum_eval_nodes = 4\n')
+
+    config = cli(C, args=["@", str(f)])
+    assert isinstance(config.deployment, Multi)
+    assert config.deployment.num_infer_nodes == 4
+
+
+def test_alias_in_optional_model(tmp_path):
+    from pydantic import AliasChoices
+
+    class Inner(BaseConfig):
+        seed: int = Field(0, validation_alias=AliasChoices("seed", "random_seed"))
+
+    class C(BaseConfig):
+        inner: Inner | None = None
+
+    f = tmp_path / "c.toml"
+    f.write_text("[inner]\nrandom_seed = 5\n")
+
+    config = cli(C, args=["@", str(f), "--inner.seed", "9"])
+    assert config.inner is not None
+    assert config.inner.seed == 9
+
+
 # ---------------------------------------------------------------------------
 # Single-dash short flags (single-character validation aliases)
 # ---------------------------------------------------------------------------
