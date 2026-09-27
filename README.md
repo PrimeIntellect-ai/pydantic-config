@@ -117,6 +117,24 @@ uv run python examples/train.py --run-name r1 --checkpoint-steps '[100, 200, 500
   <img src="https://raw.githubusercontent.com/PrimeIntellect-ai/pydantic-config/main/assets/lists.svg" alt="List values" width="700">
 </p>
 
+### Appending lists across layers
+
+A list overlay replaces the list by default. Mark a list field with `Append()`
+to collect the items of every `@` file and CLI flag instead, in order. Use it
+for lists that files contribute to, such as one `[[source]]` per file.
+
+```python
+from typing import Annotated
+from pydantic_config import Append, BaseConfig
+
+class Config(BaseConfig):
+    source: Annotated[list[SourceConfig], Append()] = []
+```
+
+```bash
+uv run python run.py @ a.toml @ b.toml --source '[{"name": "c"}]'  # sources from a, b, then c
+```
+
 ### Dicts
 
 Dict fields take a JSON literal on the CLI. A TOML/YAML dict and a CLI dict

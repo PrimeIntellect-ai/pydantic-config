@@ -6,7 +6,7 @@ from typing import Annotated
 import pytest
 from pydantic import Field
 
-from pydantic_config import cli, BaseConfig, ConfigFileError
+from pydantic_config import cli, Append, BaseConfig, ConfigFileError
 from pydantic_config.cli import (
     _deep_merge,
     _load_config_file,
@@ -2403,6 +2403,52 @@ def test_list_of_models_cli_overrides_toml(tmp_path):
     config = cli(C, args=["@", str(f), "--envs", '[{"name": "new", "workers": 99}]'])
     assert len(config.envs) == 1
     assert config.envs[0].name == "new"
+
+
+def test_append_list_collects_toml_files(tmp_path):
+    a, b = tmp_path / "a.toml", tmp_path / "b.toml"
+    a.write_text('[[envs]]\nname = "a"\n')
+    b.write_text('[[envs]]\nname = "b"\n\n[[envs]]\nname = "c"\n')
+
+    class EnvConfig(BaseConfig):
+        name: str = "default"
+
+    class C(BaseConfig):
+        envs: Annotated[list[EnvConfig], Append()] = []
+
+    config = cli(C, args=["@", str(a), "@", str(b)])
+    assert [env.name for env in config.envs] == ["a", "b", "c"]
+
+
+def test_append_list_extends_toml_with_cli(tmp_path):
+    f = tmp_path / "c.toml"
+    f.write_text('[[envs]]\nname = "file"\n')
+
+    class EnvConfig(BaseConfig):
+        name: str = "default"
+
+    class C(BaseConfig):
+        envs: Annotated[list[EnvConfig], Append()] = []
+
+    config = cli(C, args=["@", str(f), "--envs", '[{"name": "cli"}]'])
+    assert [env.name for env in config.envs] == ["file", "cli"]
+
+
+def test_append_list_nested_and_optional(tmp_path):
+    a, b = tmp_path / "a.toml", tmp_path / "b.toml"
+    a.write_text('[group]\nitems = [1]\ntags = ["x"]\n')
+    b.write_text('[group]\nitems = [2, 3]\ntags = ["y"]\n')
+
+    class Group(BaseConfig):
+        items: Annotated[list[int], Append()] = []
+        tags: list[str] = []
+
+    class C(BaseConfig):
+        group: Group | None = None
+
+    config = cli(C, args=["@", str(a), "@", str(b)])
+    assert config.group.items == [1, 2, 3]
+    assert config.group.tags == ["y"]
 
 
 def test_dict_of_models_via_toml(tmp_path):

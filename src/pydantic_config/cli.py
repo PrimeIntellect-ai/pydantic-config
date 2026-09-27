@@ -144,6 +144,15 @@ class BaseConfig(BaseModel):
         return data
 
 
+class Append:
+    """Field marker: a list that config layers extend instead of replace.
+
+    ``source: Annotated[list[SourceConfig], Append()] = []`` collects the items of
+    every layer that sets ``source`` (``@`` files, then CLI flags), in order. Other
+    lists keep the default rule: the last layer wins.
+    """
+
+
 CONFIG_FILE_SIGN = "@"
 
 
@@ -424,18 +433,22 @@ def _load_config_file(path: str) -> dict:
         raise ConfigFileError(f"Config file not found: {path}")
 
 
-def _deep_merge(base: dict, override: dict) -> dict:
-    """Deep merge two dicts. Values from override take precedence."""
+def _deep_merge(base: dict, override: dict, append: frozenset[str] = frozenset(), _prefix: str = "") -> dict:
+    """Deep merge two dicts. Values from override take precedence, except that lists
+    at the dotted ``append`` paths concatenate."""
     result = copy.deepcopy(base)
     for key, value in override.items():
+        path = f"{_prefix}{key}"
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
+            result[key] = _deep_merge(result[key], value, append, f"{path}.")
+        elif path in append and isinstance(result.get(key), list) and isinstance(value, list):
+            result[key] = result[key] + copy.deepcopy(value)
         else:
             result[key] = copy.deepcopy(value)
     return result
 
 
-def _process_args(args: list[str]) -> tuple[list[str], dict, dict[str, dict]]:
+def _process_args(args: list[str], append: frozenset[str] = frozenset()) -> tuple[list[str], dict, dict[str, dict]]:
     """
     Process command line args to extract config file references.
 
@@ -463,7 +476,7 @@ def _process_args(args: list[str]) -> tuple[list[str], dict, dict[str, dict]]:
                 raise ConfigFileError("@ must be followed by a config file path")
             config_path = args[i + 1]
             loaded = _load_config_file(config_path)
-            root_config = _deep_merge(root_config, loaded)
+            root_config = _deep_merge(root_config, loaded, append)
             i += 2
             continue
 
@@ -552,6 +565,23 @@ def _find_optional_model_paths(cls: type, prefix: str = "") -> set[str]:
         if isinstance(inner, type) and issubclass(inner, BaseModel):
             paths.update(_find_optional_model_paths(inner, prefix=full_path))
     return paths
+
+
+def _find_append_paths(cls: type, prefix: str = "") -> frozenset[str]:
+    """Recursively find the dotted snake_case paths of list fields marked ``Append``."""
+    paths: set[str] = set()
+    if not hasattr(cls, "model_fields"):
+        return frozenset()
+    for field_name, field_info in cls.model_fields.items():
+        full_path = f"{prefix}.{field_name}" if prefix else field_name
+        if any(isinstance(m, Append) for m in field_info.metadata):
+            paths.add(full_path)
+        inner = _strip_annotated(field_info.annotation)
+        if _is_optional_model(inner):
+            inner = next(a for a in get_args(inner) if a is not type(None))
+        if isinstance(inner, type) and issubclass(inner, BaseModel):
+            paths.update(_find_append_paths(inner, prefix=full_path))
+    return frozenset(paths)
 
 
 def _find_multi_union_variants(cls: type, prefix: str = "") -> dict[str, tuple[list[type], type | None]]:
@@ -1655,11 +1685,12 @@ def cli(
 
     try:
         # 1. Parse ``@ file.toml`` references into a raw TOML/JSON/YAML dict.
-        remaining_args, root_config, nested_configs = _process_args(args)
+        append = _find_append_paths(cls)
+        remaining_args, root_config, nested_configs = _process_args(args, append)
         toml_dict = root_config
         for key_path, config in nested_configs.items():
             nested = _nest_config(key_path, config)
-            toml_dict = _deep_merge(toml_dict, nested)
+            toml_dict = _deep_merge(toml_dict, nested, append)
 
         # 1b. Expand single-dash short flags (e.g. ``-n`` → ``--n-samples``)
         #     declared as single-character ``validation_alias`` entries. Runs
@@ -1709,7 +1740,7 @@ def cli(
         default_dict: dict = {}
         if default is not None and isinstance(default, BaseModel):
             default_dict = default.model_dump(exclude_unset=True)
-        merged = _deep_merge(_deep_merge(default_dict, toml_dict), cli_overrides)
+        merged = _deep_merge(_deep_merge(default_dict, toml_dict, append), cli_overrides, append)
         # Collapse ``validation_alias`` duplicates so e.g. ``seed`` (TOML) +
         # ``random_seed`` (CLI alias) merge into a single canonical key.
         merged = _normalize_alias_keys(cls, merged)
