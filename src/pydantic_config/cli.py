@@ -546,11 +546,8 @@ def _find_optional_model_paths(cls: type, prefix: str = "") -> set[str]:
         annotation = field_info.annotation
         if _is_optional_model(annotation) or _is_multi_model_union(annotation):
             paths.add(full_path)
-        inner = annotation
-        if hasattr(inner, "__metadata__"):
-            inner = get_args(inner)[0]
-        if isinstance(inner, type) and issubclass(inner, BaseModel):
-            paths.update(_find_optional_model_paths(inner, prefix=full_path))
+        for model in _field_inner_models(field_info):
+            paths.update(_find_optional_model_paths(model, prefix=full_path))
     return paths
 
 
