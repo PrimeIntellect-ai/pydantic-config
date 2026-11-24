@@ -666,6 +666,48 @@ def test_bare_flag_kebab_case():
     assert config.model.ac_offloading.pin_memory is True
 
 
+def test_bare_flag_optional_inside_union_variant():
+    """--data.fake / --no-data.fake should toggle an optional config inside a discriminated-union variant."""
+    from typing import Literal
+
+    class FakeConfig(BaseConfig):
+        length: int = 8
+
+    class DocumentsConfig(BaseConfig):
+        type: Literal["documents"] = "documents"
+
+    class ChatConfig(BaseConfig):
+        type: Literal["chat"] = "chat"
+        fake: FakeConfig | None = None
+
+    class Config(BaseConfig):
+        data: Annotated[DocumentsConfig | ChatConfig, Field(discriminator="type")] = ChatConfig()
+
+    for args in (["--data.fake"], ["--data.type", "chat", "--data.fake"]):
+        config = cli(Config, args=args)
+        assert config.data.fake is not None
+        assert config.data.fake.length == 8
+    assert cli(Config, args=["--data.fake", "--no-data.fake"]).data.fake is None
+
+
+def test_bare_flag_optional_inside_optional():
+    """--wandb.offline should enable both the outer and the inner optional config with defaults."""
+
+    class OfflineConfig(BaseConfig):
+        path: str = "logs"
+
+    class WandbConfig(BaseConfig):
+        offline: OfflineConfig | None = None
+
+    class Config(BaseConfig):
+        wandb: WandbConfig | None = None
+
+    config = cli(Config, args=["--wandb.offline"])
+    assert config.wandb is not None
+    assert config.wandb.offline is not None
+    assert config.wandb.offline.path == "logs"
+
+
 def test_optional_config_none_by_default():
     """Without the bare flag, Optional config should remain None."""
 
